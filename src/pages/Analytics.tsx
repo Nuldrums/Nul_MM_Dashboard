@@ -11,6 +11,7 @@ import {
 import { BarChart3, FileText, TrendingUp } from 'lucide-react';
 import { apiFetch } from '../hooks/useApi';
 import { useCampaigns } from '../hooks/useCampaigns';
+import { useActiveProfile } from '../hooks/useActiveProfile';
 import { PLATFORM_COLORS, PLATFORM_NAMES } from '../lib/constants';
 import EngagementChart from '../components/EngagementChart';
 
@@ -32,21 +33,23 @@ interface TrendPoint {
 }
 
 export default function Analytics() {
-  const { data: campaigns } = useCampaigns();
+  const { activeProfileId } = useActiveProfile();
+  const profileParam = activeProfileId ? `?profile_id=${activeProfileId}` : '';
+  const { data: campaigns } = useCampaigns(activeProfileId);
 
   const { data: platformData } = useQuery<PlatformBreakdown[]>({
-    queryKey: ['analytics', 'platforms'],
-    queryFn: () => apiFetch<PlatformBreakdown[]>('/analytics/platforms'),
+    queryKey: ['analytics', 'platforms', activeProfileId ?? 'all'],
+    queryFn: () => apiFetch<PlatformBreakdown[]>(`/analytics/platforms${profileParam}`),
   });
 
   const { data: postTypeData } = useQuery<PostTypeBreakdown[]>({
-    queryKey: ['analytics', 'post-types'],
-    queryFn: () => apiFetch<PostTypeBreakdown[]>('/analytics/post-types'),
+    queryKey: ['analytics', 'post-types', activeProfileId ?? 'all'],
+    queryFn: () => apiFetch<PostTypeBreakdown[]>(`/analytics/post-types${profileParam}`),
   });
 
   const { data: trendData } = useQuery<TrendPoint[]>({
-    queryKey: ['analytics', 'trends'],
-    queryFn: () => apiFetch<TrendPoint[]>('/analytics/trends'),
+    queryKey: ['analytics', 'trends', activeProfileId ?? 'all'],
+    queryFn: () => apiFetch<TrendPoint[]>(`/analytics/trends${profileParam}`),
   });
 
   const totalCampaigns = campaigns?.length ?? 0;

@@ -9,6 +9,8 @@ import {
   Flame,
 } from 'lucide-react';
 import { ThemeProvider } from './theme/ThemeProvider';
+import { ActiveProfileProvider } from './hooks/useActiveProfile';
+import ProfileSelector from './components/ProfileSelector';
 import Dashboard from './pages/Dashboard';
 import CampaignDetail from './pages/CampaignDetail';
 import PostComposer from './pages/PostComposer';
@@ -37,6 +39,7 @@ function AppLayout() {
           </h1>
           <span>Marketing Engine</span>
         </div>
+        <ProfileSelector />
         <nav className="sidebar-nav">
           <NavLink to="/" end>
             <LayoutDashboard /> Dashboard
@@ -75,7 +78,9 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <BrowserRouter>
-          <AppLayout />
+          <ActiveProfileProvider>
+            <AppLayout />
+          </ActiveProfileProvider>
         </BrowserRouter>
       </ThemeProvider>
     </QueryClientProvider>

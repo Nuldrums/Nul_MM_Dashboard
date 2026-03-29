@@ -2,10 +2,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './useApi';
 import type { Campaign } from '../lib/types';
 
-export function useCampaigns() {
+export function useCampaigns(profileId?: string | null) {
+  const params = profileId ? `?profile_id=${profileId}` : '';
   return useQuery<Campaign[]>({
-    queryKey: ['campaigns'],
-    queryFn: () => apiFetch<Campaign[]>('/campaigns'),
+    queryKey: ['campaigns', profileId ?? 'all'],
+    queryFn: () => apiFetch<Campaign[]>(`/campaigns${params}`),
   });
 }
 

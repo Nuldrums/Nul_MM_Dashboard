@@ -1,3 +1,11 @@
+export interface Profile {
+  id: string;
+  name: string;
+  description?: string;
+  avatar_color: string;
+  created_at: string;
+}
+
 export interface Product {
   id: string;
   name: string;

@@ -8,6 +8,7 @@ import {
   BookOpen,
 } from 'lucide-react';
 import { apiFetch } from '../hooks/useApi';
+import { useActiveProfile } from '../hooks/useActiveProfile';
 import type { AIAnalysis } from '../lib/types';
 import AIRecommendation from '../components/AIRecommendation';
 
@@ -24,12 +25,14 @@ interface KBResult {
 }
 
 export default function AIInsights() {
+  const { activeProfileId } = useActiveProfile();
+  const profileParam = activeProfileId ? `?profile_id=${activeProfileId}` : '';
   const [searchQuery, setSearchQuery] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
   const { data: latestAnalyses } = useQuery<AIAnalysis[]>({
-    queryKey: ['ai', 'latest'],
-    queryFn: () => apiFetch<AIAnalysis[]>('/ai/latest'),
+    queryKey: ['ai', 'latest', activeProfileId ?? 'all'],
+    queryFn: () => apiFetch<AIAnalysis[]>(`/ai/latest${profileParam}`),
   });
 
   const { data: kbStats } = useQuery<KBStats>({

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Plus, ArrowLeft, Package } from 'lucide-react';
 import { useCreateCampaign } from '../hooks/useCampaigns';
+import { useActiveProfile } from '../hooks/useActiveProfile';
 import { apiFetch } from '../hooks/useApi';
 import type { Product } from '../lib/types';
 
@@ -16,10 +17,12 @@ const GOALS = [
 export default function PostComposer() {
   const navigate = useNavigate();
   const createCampaign = useCreateCampaign();
+  const { activeProfileId } = useActiveProfile();
+  const profileParam = activeProfileId ? `?profile_id=${activeProfileId}` : '';
 
   const { data: products } = useQuery<Product[]>({
-    queryKey: ['products'],
-    queryFn: () => apiFetch<Product[]>('/products'),
+    queryKey: ['products', activeProfileId ?? 'all'],
+    queryFn: () => apiFetch<Product[]>(`/products${profileParam}`),
   });
 
   const [name, setName] = useState('');
@@ -72,6 +75,7 @@ export default function PostComposer() {
       {
         name,
         product_id: productId || undefined,
+        profile_id: activeProfileId || undefined,
         goal,
         target_audience: audience || undefined,
         start_date: startDate || undefined,

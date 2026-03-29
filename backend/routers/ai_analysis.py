@@ -4,8 +4,9 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,11 +52,15 @@ async def _run_pipeline_background():
 
 
 @router.get("/latest")
-async def latest_analyses(db: AsyncSession = Depends(get_db)):
+async def latest_analyses(
+    profile_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
     """Most recent analysis for each active campaign."""
-    campaigns = await db.execute(
-        select(Campaign).where(Campaign.status == "active")
-    )
+    query = select(Campaign).where(Campaign.status == "active")
+    if profile_id is not None:
+        query = query.where(Campaign.profile_id == profile_id)
+    campaigns = await db.execute(query)
     results = []
     for campaign in campaigns.scalars().all():
         analysis = await db.execute(

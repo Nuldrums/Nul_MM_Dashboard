@@ -14,6 +14,7 @@ from backend.database.migrations import run_migrations
 from backend.ai.scheduler import AnalysisScheduler
 
 from backend.routers import (
+    profiles,
     products,
     campaigns,
     posts,
@@ -109,6 +110,7 @@ app.add_middleware(
 )
 
 # Include all routers
+app.include_router(profiles.router)
 app.include_router(products.router)
 app.include_router(campaigns.router)
 app.include_router(posts.router)

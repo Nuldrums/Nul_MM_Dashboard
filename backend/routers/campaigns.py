@@ -2,7 +2,8 @@
 
 from uuid import uuid4
 from datetime import datetime, date
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,7 @@ class CampaignCreate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     notes: str | None = None
+    profile_id: str | None = None
 
 
 class CampaignUpdate(BaseModel):
@@ -34,6 +36,7 @@ class CampaignUpdate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     notes: str | None = None
+    profile_id: str | None = None
 
 
 class CampaignResponse(BaseModel):
@@ -46,6 +49,7 @@ class CampaignResponse(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     notes: str | None = None
+    profile_id: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     post_count: int = 0
@@ -61,10 +65,14 @@ class CampaignDetailResponse(CampaignResponse):
 
 
 @router.get("", response_model=list[CampaignResponse])
-async def list_campaigns(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Campaign).order_by(Campaign.created_at.desc())
-    )
+async def list_campaigns(
+    profile_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Campaign)
+    if profile_id is not None:
+        query = query.where(Campaign.profile_id == profile_id)
+    result = await db.execute(query.order_by(Campaign.created_at.desc()))
     campaigns = result.scalars().all()
 
     response = []

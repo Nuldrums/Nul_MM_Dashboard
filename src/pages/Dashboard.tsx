@@ -10,6 +10,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { useCampaigns } from '../hooks/useCampaigns';
+import { useActiveProfile } from '../hooks/useActiveProfile';
 import { apiFetch } from '../hooks/useApi';
 import CampaignCard from '../components/CampaignCard';
 
@@ -22,11 +23,13 @@ interface OverviewStats {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { data: campaigns, isLoading } = useCampaigns();
+  const { activeProfileId, activeProfile } = useActiveProfile();
+  const profileParam = activeProfileId ? `?profile_id=${activeProfileId}` : '';
+  const { data: campaigns, isLoading } = useCampaigns(activeProfileId);
 
   const { data: overview } = useQuery<OverviewStats>({
-    queryKey: ['analytics', 'overview'],
-    queryFn: () => apiFetch<OverviewStats>('/analytics/overview'),
+    queryKey: ['analytics', 'overview', activeProfileId ?? 'all'],
+    queryFn: () => apiFetch<OverviewStats>(`/analytics/overview${profileParam}`),
   });
 
   const { data: latestInsight } = useQuery<{ insight: string }>({
@@ -53,7 +56,7 @@ export default function Dashboard() {
   return (
     <div>
       <div className="page-header">
-        <h2>Dashboard</h2>
+        <h2>Dashboard{activeProfile ? ` — ${activeProfile.name}` : ''}</h2>
         <p>Your marketing campaigns at a glance</p>
       </div>
 

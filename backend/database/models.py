@@ -12,6 +12,19 @@ class Base(DeclarativeBase):
     pass
 
 
+class Profile(Base):
+    __tablename__ = "profiles"
+
+    id = Column(Text, primary_key=True)
+    name = Column(Text, nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    avatar_color = Column(Text, default="#E8845C")
+    created_at = Column(DateTime, default=func.now())
+
+    products = relationship("Product", back_populates="profile")
+    campaigns = relationship("Campaign", back_populates="profile")
+
+
 class Product(Base):
     __tablename__ = "products"
 
@@ -22,8 +35,10 @@ class Product(Base):
     url = Column(Text)
     price = Column(Float)
     tags = Column(Text)  # JSON array
+    profile_id = Column(Text, ForeignKey("profiles.id"), nullable=True)
     created_at = Column(DateTime, default=func.now())
 
+    profile = relationship("Profile", back_populates="products")
     campaigns = relationship("Campaign", back_populates="product")
 
 
@@ -32,6 +47,7 @@ class Campaign(Base):
 
     id = Column(Text, primary_key=True)
     product_id = Column(Text, ForeignKey("products.id"), nullable=False)
+    profile_id = Column(Text, ForeignKey("profiles.id"), nullable=True)
     name = Column(Text, nullable=False)
     status = Column(Text, default="active")
     goal = Column(Text)
@@ -43,6 +59,7 @@ class Campaign(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     product = relationship("Product", back_populates="campaigns")
+    profile = relationship("Profile", back_populates="campaigns")
     posts = relationship("Post", back_populates="campaign")
     ai_analyses = relationship("AIAnalysis", back_populates="campaign")
 

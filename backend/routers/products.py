@@ -2,7 +2,8 @@
 
 from uuid import uuid4
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,7 @@ class ProductCreate(BaseModel):
     url: str | None = None
     price: float | None = None
     tags: str | None = None  # JSON array string
+    profile_id: str | None = None
 
 
 class ProductUpdate(BaseModel):
@@ -29,6 +31,7 @@ class ProductUpdate(BaseModel):
     url: str | None = None
     price: float | None = None
     tags: str | None = None
+    profile_id: str | None = None
 
 
 class ProductResponse(BaseModel):
@@ -39,14 +42,21 @@ class ProductResponse(BaseModel):
     url: str | None = None
     price: float | None = None
     tags: str | None = None
+    profile_id: str | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
 
 @router.get("", response_model=list[ProductResponse])
-async def list_products(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Product).order_by(Product.created_at.desc()))
+async def list_products(
+    profile_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Product)
+    if profile_id is not None:
+        query = query.where(Product.profile_id == profile_id)
+    result = await db.execute(query.order_by(Product.created_at.desc()))
     return result.scalars().all()
 
 
