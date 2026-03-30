@@ -17,24 +17,26 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn load() -> anyhow::Result<Self> {
-        // Try loading .env from multiple locations
+    /// Load settings before tracing is initialized (no log calls).
+    pub fn load_early() -> anyhow::Result<Self> {
         let env_paths = Self::env_search_paths();
         for path in &env_paths {
             if path.exists() {
-                tracing::info!("Loading .env from: {}", path.display());
                 let _ = dotenvy::from_path(path);
                 break;
             }
         }
+        Self::build()
+    }
 
+    fn build() -> anyhow::Result<Self> {
         let data_dir = Self::resolve_data_dir();
         std::fs::create_dir_all(&data_dir)?;
 
         let db_path = PathBuf::from(&data_dir).join("trikeri.db");
         let database_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
-        let s = Settings {
+        Ok(Settings {
             data_dir,
             database_url,
             api_port: env_or("API_PORT", "31415").parse().unwrap_or(31415),
@@ -47,18 +49,7 @@ impl Settings {
             youtube_api_key: env_or("YOUTUBE_API_KEY", ""),
             twitter_bearer_token: env_or("TWITTER_BEARER_TOKEN", ""),
             discord_bot_token: env_or("DISCORD_BOT_TOKEN", ""),
-        };
-
-        tracing::info!(
-            "API keys configured: anthropic={}, reddit={}, youtube={}, twitter={}, discord={}",
-            !s.anthropic_api_key.is_empty(),
-            !s.reddit_client_id.is_empty(),
-            !s.youtube_api_key.is_empty(),
-            !s.twitter_bearer_token.is_empty(),
-            !s.discord_bot_token.is_empty(),
-        );
-
-        Ok(s)
+        })
     }
 
     fn resolve_data_dir() -> String {

@@ -48,9 +48,11 @@ pub fn routes() -> Router<Arc<AppState>> {
 async fn list_profiles(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<ProfileResponse>>, AppError> {
+    tracing::info!("Listing profiles");
     let rows = sqlx::query_as::<_, ProfileRow>(
         "SELECT id, name, description, avatar_color, created_at FROM profiles ORDER BY created_at ASC"
     ).fetch_all(&state.db).await?;
+    tracing::info!("Found {} profiles", rows.len());
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
@@ -58,6 +60,7 @@ async fn create_profile(
     State(state): State<Arc<AppState>>,
     Json(data): Json<ProfileCreate>,
 ) -> Result<(StatusCode, Json<ProfileResponse>), AppError> {
+    tracing::info!("Creating profile: name={:?}, color={:?}", data.name, data.avatar_color);
     // Check for duplicate name
     let existing: Option<(String,)> = sqlx::query_as(
         "SELECT id FROM profiles WHERE name = ?"
@@ -83,6 +86,7 @@ async fn create_profile(
         "SELECT id, name, description, avatar_color, created_at FROM profiles WHERE id = ?"
     ).bind(&id).fetch_one(&state.db).await?;
 
+    tracing::info!("Profile created: id={}", id);
     Ok((StatusCode::CREATED, Json(row.into())))
 }
 
