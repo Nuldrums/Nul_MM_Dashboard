@@ -1,15 +1,19 @@
-mod server;
+pub mod server;
 
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize tracing BEFORE Tauri (which sets its own logger).
+    // The guard must live for the entire process — dropping it loses buffered logs.
+    let _log_guard = server::init_tracing();
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::new().build())
         .setup(|app| {
             // Spawn the embedded backend server
             tauri::async_runtime::spawn(async {
                 if let Err(e) = server::start_server().await {
+                    tracing::error!("Backend server error: {}", e);
                     eprintln!("Backend server error: {}", e);
                 }
             });

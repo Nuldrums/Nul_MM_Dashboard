@@ -19,7 +19,7 @@ import {
   X,
   Brain,
 } from 'lucide-react';
-import { useCampaign, useUpdateCampaign } from '../hooks/useCampaigns';
+import { useCampaign, useUpdateCampaign, useDeleteCampaign } from '../hooks/useCampaigns';
 import { apiFetch } from '../hooks/useApi';
 import type { Post, AIAnalysis, Platform, PostType } from '../lib/types';
 import { PLATFORM_NAMES } from '../lib/constants';
@@ -32,8 +32,6 @@ const PLATFORMS: Platform[] = [
   'x',
   'youtube',
   'discord',
-  'producthunt',
-  'hackernews',
   'tiktok',
   'instagram',
   'linkedin',
@@ -62,8 +60,6 @@ function detectPlatformFromUrl(url: string): Platform | '' {
     return 'youtube';
   if (lower.includes('discord.com') || lower.includes('discord.gg'))
     return 'discord';
-  if (lower.includes('producthunt.com')) return 'producthunt';
-  if (lower.includes('news.ycombinator.com')) return 'hackernews';
   if (lower.includes('tiktok.com')) return 'tiktok';
   if (lower.includes('instagram.com')) return 'instagram';
   if (lower.includes('linkedin.com')) return 'linkedin';
@@ -76,6 +72,8 @@ export default function CampaignDetail() {
   const queryClient = useQueryClient();
   const { data: campaign, isLoading } = useCampaign(id ?? '');
   const updateCampaign = useUpdateCampaign();
+  const deleteCampaign = useDeleteCampaign();
+  const [confirmPermanentDelete, setConfirmPermanentDelete] = useState(false);
 
   const [tab, setTab] = useState<
     'posts' | 'metrics' | 'ai' | 'settings'
@@ -203,6 +201,14 @@ export default function CampaignDetail() {
       return;
     updateCampaign.mutate(
       { id, status: 'archived' },
+      { onSuccess: () => navigate('/') }
+    );
+  };
+
+  const handlePermanentDelete = () => {
+    if (!id) return;
+    deleteCampaign.mutate(
+      { id, permanent: true },
       { onSuccess: () => navigate('/') }
     );
   };
@@ -888,12 +894,41 @@ export default function CampaignDetail() {
               Danger Zone
             </h3>
             <p className="text-muted" style={{ marginBottom: 12 }}>
-              Archiving a campaign hides it from the dashboard and stops
-              metric collection.
+              Archiving hides the campaign from the dashboard and stops
+              metric collection. Deleting permanently removes it and all
+              its posts, metrics, and analyses.
             </p>
-            <button className="btn btn-danger" onClick={handleArchive}>
-              Archive Campaign
-            </button>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button className="btn btn-danger" onClick={handleArchive}>
+                Archive Campaign
+              </button>
+              {confirmPermanentDelete ? (
+                <>
+                  <button
+                    className="btn btn-danger"
+                    style={{ background: '#991b1b' }}
+                    onClick={handlePermanentDelete}
+                    disabled={deleteCampaign.isPending}
+                  >
+                    {deleteCampaign.isPending ? 'Deleting...' : 'Confirm Delete Forever'}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setConfirmPermanentDelete(false)}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn btn-ghost"
+                  style={{ color: 'var(--danger)' }}
+                  onClick={() => setConfirmPermanentDelete(true)}
+                >
+                  Delete Permanently
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

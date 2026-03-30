@@ -56,7 +56,7 @@ function AppLayout() {
             <Settings /> Settings
           </NavLink>
         </nav>
-        <div className="sidebar-footer">Trikeri v0.1.0</div>
+        <div className="sidebar-footer">MEEM v0.1.0</div>
       </aside>
       <main className="main-content">
         <Routes>

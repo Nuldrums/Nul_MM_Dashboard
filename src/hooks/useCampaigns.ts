@@ -46,3 +46,15 @@ export function useUpdateCampaign() {
     },
   });
 }
+
+export function useDeleteCampaign() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, permanent }: { id: string; permanent?: boolean }) =>
+      apiFetch<void>(`/campaigns/${id}${permanent ? '?permanent=true' : ''}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+      queryClient.invalidateQueries({ queryKey: ['analytics'] });
+    },
+  });
+}

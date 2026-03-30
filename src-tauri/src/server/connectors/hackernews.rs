@@ -60,7 +60,7 @@ impl PlatformConnector for HackerNewsConnector {
             let rest = &url[pos + 3..];
             let end = rest.find('&').unwrap_or(rest.len());
             let id = &rest[..end];
-            if id.chars().all(|c| c.is_ascii_digit()) {
+            if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) {
                 return Some(id.to_string());
             }
         }

@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { TrendingUp } from 'lucide-react';
+import { TrendingUp, Trash2 } from 'lucide-react';
 import type { Campaign } from '../lib/types';
 import { PLATFORM_COLORS } from '../lib/constants';
+import { useDeleteCampaign } from '../hooks/useCampaigns';
 import MetricSparkline from './MetricSparkline';
 
 interface CampaignCardProps {
@@ -17,6 +19,8 @@ function getScoreClass(score?: number) {
 
 export default function CampaignCard({ campaign }: CampaignCardProps) {
   const navigate = useNavigate();
+  const deleteCampaign = useDeleteCampaign();
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const platforms = Array.from(
     new Set(campaign.posts?.map((p) => p.platform) ?? [])
@@ -56,9 +60,39 @@ export default function CampaignCard({ campaign }: CampaignCardProps) {
             {campaign.product?.name ?? 'No product'}
           </span>
         </div>
-        <span className={`badge badge-${campaign.status}`}>
-          {campaign.status}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className={`badge badge-${campaign.status}`}>
+            {campaign.status}
+          </span>
+          {confirmDelete ? (
+            <span style={{ display: 'flex', gap: 4, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+              <button
+                className="btn btn-sm"
+                style={{ fontSize: '0.7rem', padding: '2px 8px', background: 'var(--color-danger, #ef4444)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                onClick={() => deleteCampaign.mutate({ id: campaign.id, permanent: true })}
+              >
+                Delete
+              </button>
+              <button
+                className="btn btn-sm"
+                style={{ fontSize: '0.7rem', padding: '2px 8px', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}
+                onClick={() => setConfirmDelete(false)}
+              >
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <button
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4, borderRadius: 4, display: 'flex', alignItems: 'center' }}
+              title="Delete campaign"
+              onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
+              onMouseEnter={e => (e.currentTarget.style.color = 'var(--color-danger, #ef4444)')}
+              onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex-between" style={{ marginBottom: 8 }}>

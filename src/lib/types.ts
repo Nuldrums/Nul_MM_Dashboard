@@ -107,5 +107,5 @@ export interface SystemStatus {
   analysis_last_run?: string;
 }
 
-export type Platform = "reddit" | "x" | "youtube" | "discord" | "producthunt" | "hackernews" | "tiktok" | "instagram" | "linkedin" | "other";
+export type Platform = "reddit" | "x" | "youtube" | "discord" | "tiktok" | "instagram" | "linkedin" | "other";
 export type PostType = "text" | "image" | "video_short" | "video_long" | "thread" | "comment" | "link" | "self_promo";

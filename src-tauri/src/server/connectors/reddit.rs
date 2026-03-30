@@ -45,7 +45,7 @@ impl RedditConnector {
         let resp = self.client
             .post("https://www.reddit.com/api/v1/access_token")
             .basic_auth(&self.client_id, Some(&self.client_secret))
-            .header("User-Agent", "TrikeriMarketingEngine/0.1")
+            .header("User-Agent", "MeemMarketing/0.1")
             .form(&[
                 ("grant_type", "password"),
                 ("username", &self.username),
@@ -80,7 +80,7 @@ impl PlatformConnector for RedditConnector {
                 let resp = self.client
                     .get("https://oauth.reddit.com/api/v1/me")
                     .bearer_auth(&token)
-                    .header("User-Agent", "TrikeriMarketingEngine/0.1")
+                    .header("User-Agent", "MeemMarketing/0.1")
                     .send().await;
                 matches!(resp, Ok(r) if r.status().is_success())
             }
@@ -94,7 +94,7 @@ impl PlatformConnector for RedditConnector {
         let resp = self.client
             .get(&url)
             .bearer_auth(&token)
-            .header("User-Agent", "TrikeriMarketingEngine/0.1")
+            .header("User-Agent", "MeemMarketing/0.1")
             .send().await?;
 
         let data: serde_json::Value = resp.json().await?;

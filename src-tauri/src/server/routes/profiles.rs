@@ -151,10 +151,30 @@ async fn delete_profile(
 
     if campaign_count.0 > 0 {
         return Err(AppError::Conflict(format!(
-            "Cannot delete profile with {} attached campaign(s). Reassign or delete them first.",
+            "Cannot delete profile with {} active campaign(s). Archive or delete them first.",
             campaign_count.0
         )));
     }
+
+    // Clean up archived campaigns' posts and metrics, then the campaigns themselves
+    let archived_campaigns: Vec<(String,)> = sqlx::query_as(
+        "SELECT id FROM campaigns WHERE profile_id = ? AND status = 'archived'"
+    ).bind(&profile_id).fetch_all(&state.db).await?;
+
+    for (cid,) in &archived_campaigns {
+        sqlx::query("DELETE FROM metric_snapshots WHERE post_id IN (SELECT id FROM posts WHERE campaign_id = ?)")
+            .bind(cid).execute(&state.db).await?;
+        sqlx::query("DELETE FROM posts WHERE campaign_id = ?")
+            .bind(cid).execute(&state.db).await?;
+        sqlx::query("DELETE FROM ai_analyses WHERE campaign_id = ?")
+            .bind(cid).execute(&state.db).await?;
+    }
+    sqlx::query("DELETE FROM campaigns WHERE profile_id = ? AND status = 'archived'")
+        .bind(&profile_id).execute(&state.db).await?;
+
+    // Clean up products belonging to this profile
+    sqlx::query("DELETE FROM products WHERE profile_id = ?")
+        .bind(&profile_id).execute(&state.db).await?;
 
     sqlx::query("DELETE FROM profiles WHERE id = ?")
         .bind(&profile_id).execute(&state.db).await?;

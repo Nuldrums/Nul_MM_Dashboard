@@ -1,8 +1,20 @@
 use std::sync::Arc;
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, put, delete}, Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use crate::server::{AppState, error::AppError};
 use crate::server::db::models::{PostRow, deserialize_tags_from_input, serialize_tags_to_json_string};
+
+/// Accepts both bool (false/true) and int (0/1) for is_api_tracked
+fn deserialize_bool_or_int<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where D: Deserializer<'de> {
+    use serde_json::Value;
+    let v = Option::<Value>::deserialize(deserializer)?;
+    Ok(match v {
+        Some(Value::Bool(b)) => Some(if b { 1 } else { 0 }),
+        Some(Value::Number(n)) => Some(n.as_i64().unwrap_or(0) as i32),
+        _ => None,
+    })
+}
 
 #[derive(Deserialize)]
 pub struct PostCreate {
@@ -16,6 +28,7 @@ pub struct PostCreate {
     pub posted_at: Option<String>,
     #[serde(default, deserialize_with = "deserialize_tags_from_input")]
     pub tags: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_bool_or_int")]
     pub is_api_tracked: Option<i32>,
 }
 
@@ -31,6 +44,7 @@ pub struct PostUpdate {
     pub posted_at: Option<String>,
     #[serde(default, deserialize_with = "deserialize_tags_from_input")]
     pub tags: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_bool_or_int")]
     pub is_api_tracked: Option<i32>,
 }
 

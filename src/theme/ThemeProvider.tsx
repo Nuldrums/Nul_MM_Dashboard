@@ -19,7 +19,7 @@ interface ThemeContextValue {
   setTheme: (id: string) => void;
 }
 
-const STORAGE_KEY = 'trikeri-theme';
+const STORAGE_KEY = 'meem-theme';
 const DEFAULT_THEME = 'peach_sunset';
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);

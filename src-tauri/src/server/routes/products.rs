@@ -152,7 +152,7 @@ async fn update_product(
 async fn delete_product(
     State(state): State<Arc<AppState>>,
     Path(product_id): Path<String>,
-) -> Result<StatusCode, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let existing: Option<(String,)> = sqlx::query_as(
         "SELECT id FROM products WHERE id = ?"
     ).bind(&product_id).fetch_optional(&state.db).await?;
@@ -161,8 +161,36 @@ async fn delete_product(
         return Err(AppError::NotFound("Product not found".into()));
     }
 
+    // Check for non-archived campaigns using this product
+    let active_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM campaigns WHERE product_id = ? AND status != 'archived'"
+    ).bind(&product_id).fetch_one(&state.db).await?;
+
+    if active_count.0 > 0 {
+        return Err(AppError::Conflict(format!(
+            "Cannot delete product with {} active campaign(s). Archive or delete them first.",
+            active_count.0
+        )));
+    }
+
+    // Cascade delete archived campaigns and their data
+    let archived_campaigns: Vec<(String,)> = sqlx::query_as(
+        "SELECT id FROM campaigns WHERE product_id = ? AND status = 'archived'"
+    ).bind(&product_id).fetch_all(&state.db).await?;
+
+    for (cid,) in &archived_campaigns {
+        sqlx::query("DELETE FROM metric_snapshots WHERE post_id IN (SELECT id FROM posts WHERE campaign_id = ?)")
+            .bind(cid).execute(&state.db).await?;
+        sqlx::query("DELETE FROM posts WHERE campaign_id = ?")
+            .bind(cid).execute(&state.db).await?;
+        sqlx::query("DELETE FROM ai_analyses WHERE campaign_id = ?")
+            .bind(cid).execute(&state.db).await?;
+    }
+    sqlx::query("DELETE FROM campaigns WHERE product_id = ? AND status = 'archived'")
+        .bind(&product_id).execute(&state.db).await?;
+
     sqlx::query("DELETE FROM products WHERE id = ?")
         .bind(&product_id).execute(&state.db).await?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({"message": "Product deleted", "id": product_id})))
 }

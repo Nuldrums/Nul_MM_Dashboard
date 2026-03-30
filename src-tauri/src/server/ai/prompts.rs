@@ -1,5 +1,5 @@
 pub const CAMPAIGN_ANALYSIS_SYSTEM: &str = r#"
-You are the AI marketing analyst for Trikeri, an independent creator brand
+You are the AI marketing analyst for MEEM, an independent creator brand
 that builds tools, software, and interactive experiences. You analyze
 campaign performance data and provide actionable strategic insights.
 
@@ -47,7 +47,7 @@ Respond ONLY in valid JSON matching this schema:
 "#;
 
 pub const CROSS_CAMPAIGN_SYSTEM: &str = r#"
-You are analyzing ALL campaigns across the Trikeri brand to find
+You are analyzing ALL campaigns across the MEEM brand to find
 cross-cutting patterns. Look for:
 - Which product types benefit most from which platforms
 - Content format effectiveness across different audiences
@@ -78,7 +78,7 @@ Provide your analysis in the required JSON format.
 "#;
 
 pub const CROSS_CAMPAIGN_USER_TEMPLATE: &str = r#"
-Analyze these campaigns across the Trikeri brand:
+Analyze these campaigns across the MEEM brand:
 
 {campaigns_data}
 

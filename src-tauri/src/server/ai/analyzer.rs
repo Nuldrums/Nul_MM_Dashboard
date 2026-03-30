@@ -89,7 +89,7 @@ async fn call_claude(
     }))
 }
 
-fn parse_json_response(raw: &str) -> anyhow::Result<serde_json::Value> {
+pub fn parse_json_response(raw: &str) -> anyhow::Result<serde_json::Value> {
     // Strip markdown code fences if present
     let trimmed = raw.trim();
     let json_str = if trimmed.starts_with("```") {

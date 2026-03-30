@@ -33,7 +33,13 @@ impl Settings {
         let data_dir = Self::resolve_data_dir();
         std::fs::create_dir_all(&data_dir)?;
 
-        let db_path = PathBuf::from(&data_dir).join("trikeri.db");
+        // Use legacy DB name if it exists, otherwise new name
+        let legacy_db = PathBuf::from(&data_dir).join("trikeri.db");
+        let db_path = if legacy_db.exists() {
+            legacy_db
+        } else {
+            PathBuf::from(&data_dir).join("meem.db")
+        };
         let database_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
         Ok(Settings {
@@ -53,9 +59,14 @@ impl Settings {
     }
 
     fn resolve_data_dir() -> String {
-        // In production, use AppData/Roaming
         if let Some(appdata) = std::env::var_os("APPDATA") {
-            let p = PathBuf::from(appdata).join("TrikeriMarketingEngine").join("data");
+            let base = PathBuf::from(appdata);
+            // Check legacy location first to preserve existing data
+            let legacy = base.join("TrikeriMarketingEngine").join("data");
+            if legacy.exists() {
+                return legacy.to_string_lossy().into_owned();
+            }
+            let p = base.join("MEEM Marketing").join("data");
             return p.to_string_lossy().into_owned();
         }
         // Fallback for dev
@@ -74,6 +85,8 @@ impl Settings {
 
         // AppData
         if let Some(appdata) = std::env::var_os("APPDATA") {
+            paths.push(PathBuf::from(appdata.clone()).join("MEEM Marketing").join(".env"));
+            // Also check legacy location
             paths.push(PathBuf::from(appdata).join("TrikeriMarketingEngine").join(".env"));
         }
 

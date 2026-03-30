@@ -99,7 +99,7 @@ export default function SettingsPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'trikeri-export.json';
+      a.download = 'meem-export.json';
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -125,8 +125,6 @@ export default function SettingsPage() {
     'x',
     'youtube',
     'discord',
-    'producthunt',
-    'hackernews',
     'tiktok',
     'instagram',
     'linkedin',
@@ -136,7 +134,7 @@ export default function SettingsPage() {
     <div>
       <div className="page-header">
         <h2>Settings</h2>
-        <p>Configure your Trikeri Marketing Engine</p>
+        <p>Configure your MEEM Marketing engine</p>
       </div>
 
       {/* Platform Connections */}

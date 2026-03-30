@@ -24,6 +24,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/ai/trigger", post(trigger_analysis))
         .route("/api/ai/status", get(analysis_status))
         .route("/api/ai/recommendations", get(recommendations))
+        .route("/api/ai/cross-campaign-insight", get(cross_campaign_insight))
         .route("/api/ai/knowledge-base/query", get(knowledge_base_query))
         .route("/api/ai/knowledge-base/stats", get(knowledge_base_stats))
 }
@@ -162,6 +163,22 @@ async fn recommendations(
             "recommendations": [],
             "message": "No cross-campaign analysis available yet",
         }))),
+    }
+}
+
+async fn cross_campaign_insight(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let analysis = sqlx::query_as::<_, AIAnalysisRow>(
+        "SELECT id, campaign_id, analysis_type, summary, top_performers, underperformers,
+                patterns, recommendations, raw_response, model_used, tokens_used, analyzed_at
+         FROM ai_analyses WHERE analysis_type = 'cross_campaign'
+         ORDER BY analyzed_at DESC LIMIT 1"
+    ).fetch_optional(&state.db).await?;
+
+    match analysis {
+        Some(a) => Ok(Json(serde_json::json!({ "insight": a.summary }))),
+        None => Ok(Json(serde_json::json!({ "insight": "" }))),
     }
 }
 

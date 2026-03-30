@@ -38,12 +38,7 @@ pub async fn query(
         return Ok(vec![]);
     }
 
-    // Escape FTS5 special characters and build query
-    let fts_query = query_text
-        .replace('"', "\"\"")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" OR ");
+    let fts_query = build_fts_query(query_text);
 
     let rows: Vec<(String, String, String, String)> = sqlx::query_as(
         "SELECT doc_id, doc_type, content, metadata FROM knowledge_fts
@@ -64,6 +59,15 @@ pub async fn query(
     }).collect();
 
     Ok(results)
+}
+
+/// Build an FTS5 MATCH query from user input: escape special chars, OR-join words.
+pub fn build_fts_query(query_text: &str) -> String {
+    query_text
+        .replace('"', "\"\"")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" OR ")
 }
 
 pub async fn get_stats(pool: &SqlitePool) -> anyhow::Result<serde_json::Value> {

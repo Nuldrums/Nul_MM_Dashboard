@@ -20,15 +20,15 @@ pub struct AppState {
     pub fetch_running: AtomicBool,
 }
 
-pub async fn start_server() -> anyhow::Result<()> {
-    // Load settings first so we can set up the log directory
-    let settings = config::Settings::load_early()?;
-
-    // Set up file + console logging
+/// Initialize tracing (file + stderr). Call ONCE before anything else.
+/// Returns a guard that must be kept alive for the lifetime of the process.
+pub fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let settings = config::Settings::load_early().ok()?;
     let log_dir = std::path::PathBuf::from(&settings.data_dir).join("logs");
-    std::fs::create_dir_all(&log_dir)?;
+    std::fs::create_dir_all(&log_dir).ok()?;
+
     let file_appender = tracing_appender::rolling::daily(&log_dir, "backend.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
@@ -36,7 +36,14 @@ pub async fn start_server() -> anyhow::Result<()> {
         .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
         .init();
 
-    tracing::info!("=== Trikeri Marketing Engine backend starting ===");
+    Some(guard)
+}
+
+pub async fn start_server() -> anyhow::Result<()> {
+    let settings = config::Settings::load_early()?;
+
+    tracing::info!("=== MEEM Marketing backend starting ===");
+    let log_dir = std::path::PathBuf::from(&settings.data_dir).join("logs");
     tracing::info!("Log file: {}", log_dir.join("backend.log").display());
     tracing::info!("Data dir: {}", settings.data_dir);
     tracing::info!("Database URL: {}", settings.database_url);
@@ -74,7 +81,14 @@ pub async fn start_server() -> anyhow::Result<()> {
 
     let addr = format!("127.0.0.1:{}", port);
     tracing::info!("Backend server listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("FATAL: Cannot bind to {} — {}", addr, e);
+            tracing::error!("Another process may be using port {}. Kill it and restart.", port);
+            return Err(e.into());
+        }
+    };
     tracing::info!("Server ready, accepting connections");
     axum::serve(listener, app).await?;
     Ok(())

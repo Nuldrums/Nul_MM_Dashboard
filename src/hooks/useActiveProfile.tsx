@@ -1,8 +1,9 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useProfiles } from './useProfiles';
 import type { Profile } from '../lib/types';
 
-const STORAGE_KEY = 'trikeri-active-profile';
+const STORAGE_KEY = 'meem-active-profile';
 
 interface ActiveProfileContextValue {
   activeProfileId: string | null;
@@ -17,6 +18,9 @@ const ActiveProfileContext = createContext<ActiveProfileContextValue>({
 });
 
 export function ActiveProfileProvider({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
+  const isInitialMount = useRef(true);
+
   const [activeProfileId, setActiveProfileIdState] = useState<string | null>(() => {
     try {
       return localStorage.getItem(STORAGE_KEY);
@@ -28,6 +32,7 @@ export function ActiveProfileProvider({ children }: { children: ReactNode }) {
   const { data: profiles } = useProfiles();
 
   const setActiveProfileId = (id: string | null) => {
+    const changed = id !== activeProfileId;
     setActiveProfileIdState(id);
     try {
       if (id) {
@@ -37,6 +42,9 @@ export function ActiveProfileProvider({ children }: { children: ReactNode }) {
       }
     } catch {
       // localStorage unavailable
+    }
+    if (changed && !isInitialMount.current) {
+      navigate('/');
     }
   };
 
@@ -52,6 +60,7 @@ export function ActiveProfileProvider({ children }: { children: ReactNode }) {
         setActiveProfileId(profiles[0].id);
       }
     }
+    isInitialMount.current = false;
   }, [profiles, activeProfileId]);
 
   const activeProfile = profiles?.find((p) => p.id === activeProfileId) ?? null;

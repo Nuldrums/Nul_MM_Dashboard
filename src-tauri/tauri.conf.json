@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Trikeri Marketing Engine",
+  "productName": "MEEM Marketing",
   "version": "0.1.0",
-  "identifier": "com.trikeri.marketing-engine",
+  "identifier": "com.meem.marketing",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Trikeri Marketing Engine",
+        "title": "MEEM Marketing",
         "width": 1400,
         "height": 900,
         "minWidth": 1000,

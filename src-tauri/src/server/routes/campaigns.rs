@@ -78,6 +78,11 @@ impl CampaignResponse {
     }
 }
 
+#[derive(Deserialize)]
+pub struct DeleteParams {
+    pub permanent: Option<bool>,
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/campaigns", get(list_campaigns).post(create_campaign))
@@ -243,6 +248,7 @@ async fn update_campaign(
 async fn delete_campaign(
     State(state): State<Arc<AppState>>,
     Path(campaign_id): Path<String>,
+    Query(params): Query<DeleteParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let existing: Option<(String,)> = sqlx::query_as(
         "SELECT id FROM campaigns WHERE id = ?"
@@ -252,8 +258,23 @@ async fn delete_campaign(
         return Err(AppError::NotFound("Campaign not found".into()));
     }
 
-    sqlx::query("UPDATE campaigns SET status = 'archived', updated_at = datetime('now') WHERE id = ?")
-        .bind(&campaign_id).execute(&state.db).await?;
+    if params.permanent.unwrap_or(false) {
+        // Hard delete: cascade remove posts, metrics, analyses, then campaign
+        sqlx::query("DELETE FROM metric_snapshots WHERE post_id IN (SELECT id FROM posts WHERE campaign_id = ?)")
+            .bind(&campaign_id).execute(&state.db).await?;
+        sqlx::query("DELETE FROM posts WHERE campaign_id = ?")
+            .bind(&campaign_id).execute(&state.db).await?;
+        sqlx::query("DELETE FROM ai_analyses WHERE campaign_id = ?")
+            .bind(&campaign_id).execute(&state.db).await?;
+        sqlx::query("DELETE FROM campaigns WHERE id = ?")
+            .bind(&campaign_id).execute(&state.db).await?;
 
-    Ok(Json(serde_json::json!({"message": "Campaign archived", "id": campaign_id})))
+        Ok(Json(serde_json::json!({"message": "Campaign permanently deleted", "id": campaign_id})))
+    } else {
+        // Soft delete: archive
+        sqlx::query("UPDATE campaigns SET status = 'archived', updated_at = datetime('now') WHERE id = ?")
+            .bind(&campaign_id).execute(&state.db).await?;
+
+        Ok(Json(serde_json::json!({"message": "Campaign archived", "id": campaign_id})))
+    }
 }

@@ -5,8 +5,8 @@ use crate::server::{AppState, error::AppError};
 use crate::server::db::models::PlatformConfigRow;
 
 const SUPPORTED_PLATFORMS: &[&str] = &[
-    "reddit", "youtube", "twitter", "discord", "hackernews",
-    "producthunt", "tiktok", "instagram", "linkedin", "other",
+    "reddit", "youtube", "twitter", "discord",
+    "tiktok", "instagram", "linkedin", "other",
 ];
 
 #[derive(Deserialize)]
@@ -163,16 +163,6 @@ async fn platform_health(
             "credentials_configured": has_creds,
             "last_fetched_at": pc.last_fetched_at.map(|dt| dt.to_string()),
             "status": if has_creds && enabled { "ready" } else { "not_configured" },
-        }));
-    }
-
-    // HN is always available
-    if !health.contains_key("hackernews") {
-        health.insert("hackernews".into(), serde_json::json!({
-            "enabled": true,
-            "credentials_configured": true,
-            "last_fetched_at": null,
-            "status": "ready",
         }));
     }
 
