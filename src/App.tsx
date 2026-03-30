@@ -35,9 +35,8 @@ function AppLayout() {
         <div className="sidebar-brand">
           <h1>
             <Flame size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 6 }} />
-            Trikeri
+            MEEM MARKETING
           </h1>
-          <span>Marketing Engine</span>
         </div>
         <ProfileSelector />
         <nav className="sidebar-nav">

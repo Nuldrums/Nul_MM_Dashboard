@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ArrowLeft, Package } from 'lucide-react';
 import { useCreateCampaign } from '../hooks/useCampaigns';
 import { useActiveProfile } from '../hooks/useActiveProfile';
@@ -17,6 +17,7 @@ const GOALS = [
 export default function PostComposer() {
   const navigate = useNavigate();
   const createCampaign = useCreateCampaign();
+  const queryClient = useQueryClient();
   const { activeProfileId } = useActiveProfile();
   const profileParam = activeProfileId ? `?profile_id=${activeProfileId}` : '';
 
@@ -40,6 +41,7 @@ export default function PostComposer() {
   const [newProductUrl, setNewProductUrl] = useState('');
   const [newProductPrice, setNewProductPrice] = useState('');
   const [creatingProduct, setCreatingProduct] = useState(false);
+  const [error, setError] = useState('');
 
   const handleCreateProduct = async () => {
     if (!newProductName.trim()) return;
@@ -52,6 +54,7 @@ export default function PostComposer() {
           type: newProductType,
           url: newProductUrl || undefined,
           price: newProductPrice ? parseFloat(newProductPrice) : undefined,
+          profile_id: activeProfileId || undefined,
           tags: [],
         }),
       });
@@ -60,8 +63,10 @@ export default function PostComposer() {
       setNewProductName('');
       setNewProductUrl('');
       setNewProductPrice('');
-    } catch {
-      // handle error
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+    } catch (err: any) {
+      console.error('[PostComposer] Product creation failed:', err);
+      setError(err?.message || 'Failed to create product. Check if the backend is running.');
     } finally {
       setCreatingProduct(false);
     }
@@ -69,12 +74,21 @@ export default function PostComposer() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    setError('');
+
+    if (!name.trim()) {
+      setError('Campaign name is required.');
+      return;
+    }
+    if (!productId) {
+      setError('Please select or create a product first.');
+      return;
+    }
 
     createCampaign.mutate(
       {
         name,
-        product_id: productId || undefined,
+        product_id: productId,
         profile_id: activeProfileId || undefined,
         goal,
         target_audience: audience || undefined,
@@ -86,6 +100,9 @@ export default function PostComposer() {
       {
         onSuccess: (data) => {
           navigate(`/campaigns/${data.id}`);
+        },
+        onError: (err: any) => {
+          setError(err?.message || 'Failed to create campaign. Please try again.');
         },
       }
     );
@@ -267,6 +284,20 @@ export default function PostComposer() {
               placeholder="Any additional notes about this campaign..."
             />
           </div>
+
+          {error && (
+            <div style={{
+              background: 'var(--danger-bg)',
+              color: 'var(--danger)',
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-sm)',
+              marginBottom: 12,
+              fontSize: 14,
+              border: '1px solid var(--danger)',
+            }}>
+              {error}
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
             <button
