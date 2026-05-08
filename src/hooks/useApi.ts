@@ -27,6 +27,11 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
     throw new Error(detail || `API error: ${res.status}`);
   }
 
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    console.log(`[API] ${method} ${path} → ${res.status} (no content)`);
+    return undefined as T;
+  }
+
   const data = await res.json();
   console.log(`[API] ${method} ${path} → ${res.status}`, data);
   return data;

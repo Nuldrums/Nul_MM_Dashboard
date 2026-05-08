@@ -9,6 +9,7 @@ pub fn run() {
     let _log_guard = server::init_tracing();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // Spawn the embedded backend server
             tauri::async_runtime::spawn(async {

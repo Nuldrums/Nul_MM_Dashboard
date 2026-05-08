@@ -128,6 +128,15 @@ async fn create_post(
     let id = uuid::Uuid::new_v4().to_string();
     let is_api_tracked = data.is_api_tracked.unwrap_or(0);
 
+    // Normalize date-only strings (e.g. "2026-03-15") to full datetime for SQLite
+    let posted_at = data.posted_at.map(|s| {
+        if s.len() == 10 && !s.contains('T') && !s.contains(' ') {
+            format!("{} 00:00:00", s)
+        } else {
+            s
+        }
+    });
+
     sqlx::query(
         "INSERT INTO posts (id, campaign_id, platform, post_type, platform_post_id, url, title,
          body_preview, target_community, posted_at, tags, is_api_tracked)
@@ -135,7 +144,7 @@ async fn create_post(
     )
         .bind(&id).bind(&campaign_id).bind(&data.platform).bind(&data.post_type)
         .bind(&data.platform_post_id).bind(&data.url).bind(&data.title)
-        .bind(&data.body_preview).bind(&data.target_community).bind(&data.posted_at)
+        .bind(&data.body_preview).bind(&data.target_community).bind(&posted_at)
         .bind(&data.tags).bind(is_api_tracked)
         .execute(&state.db).await?;
 
@@ -168,7 +177,13 @@ async fn update_post(
     let title = data.title.or(row.title);
     let body_preview = data.body_preview.or(row.body_preview);
     let target_community = data.target_community.or(row.target_community);
-    let posted_at = data.posted_at.or(row.posted_at.map(|dt| dt.to_string()));
+    let posted_at = data.posted_at.map(|s| {
+        if s.len() == 10 && !s.contains('T') && !s.contains(' ') {
+            format!("{} 00:00:00", s)
+        } else {
+            s
+        }
+    }).or(row.posted_at.map(|dt| dt.to_string()));
     let tags = data.tags.or(row.tags);
     let is_api_tracked = data.is_api_tracked.unwrap_or(row.is_api_tracked);
 

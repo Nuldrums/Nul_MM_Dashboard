@@ -25,7 +25,8 @@ async fn check_and_trigger(state: &Arc<AppState>) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if state.settings.anthropic_api_key.is_empty() {
+    let cli_available = crate::server::ai::claude_cli::is_available();
+    if state.settings.anthropic_api_key.is_empty() && !cli_available {
         return Ok(());
     }
 

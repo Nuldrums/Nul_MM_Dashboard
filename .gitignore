@@ -55,3 +55,4 @@ src-tauri/binaries/
 .DS_Store
 Thumbs.db
 .claude/
+.aider*

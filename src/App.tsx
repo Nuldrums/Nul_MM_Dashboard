@@ -7,7 +7,11 @@ import {
   Settings,
   PlusCircle,
   Flame,
+  Minus,
+  Square,
+  X,
 } from 'lucide-react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ThemeProvider } from './theme/ThemeProvider';
 import { ActiveProfileProvider } from './hooks/useActiveProfile';
 import ProfileSelector from './components/ProfileSelector';
@@ -19,6 +23,8 @@ import AIInsights from './pages/AIInsights';
 import SettingsPage from './pages/Settings';
 import './App.css';
 
+const appWindow = getCurrentWindow();
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -28,9 +34,29 @@ const queryClient = new QueryClient({
   },
 });
 
+function TitleBar() {
+  return (
+    <div className="titlebar" data-tauri-drag-region>
+      <div className="titlebar-title" data-tauri-drag-region>MEEM Marketing</div>
+      <div className="titlebar-controls">
+        <button className="titlebar-btn" onClick={() => appWindow.minimize()}>
+          <Minus size={14} />
+        </button>
+        <button className="titlebar-btn" onClick={() => appWindow.toggleMaximize()}>
+          <Square size={11} />
+        </button>
+        <button className="titlebar-btn titlebar-btn-close" onClick={() => appWindow.close()}>
+          <X size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AppLayout() {
   return (
     <div className="app-layout">
+      <TitleBar />
       <aside className="sidebar">
         <div className="sidebar-brand">
           <h1>

@@ -23,7 +23,8 @@ export interface Campaign {
   name: string;
   status: "active" | "paused" | "completed" | "archived";
   goal?: string;
-  target_audience?: string;
+  target_audience?: string[];
+  tags?: string[];
   start_date?: string;
   end_date?: string;
   notes?: string;

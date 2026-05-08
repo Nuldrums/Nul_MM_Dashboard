@@ -23,9 +23,18 @@ pub struct GeneralSettingsUpdate {
     pub auto_analysis_interval_hours: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub struct AiSettingsUpdate {
+    pub provider: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub auto_analysis: Option<bool>,
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/settings", get(get_settings))
+        .route("/api/settings/ai", put(update_ai_settings))
         .route("/api/settings/platform/{platform_name}", put(update_platform_config))
         .route("/api/settings/general", put(update_general_settings))
         .route("/api/settings/health", get(platform_health))
@@ -137,6 +146,40 @@ async fn update_general_settings(
     }
 
     Ok(Json(serde_json::json!({"message": "General settings updated"})))
+}
+
+async fn update_ai_settings(
+    State(state): State<Arc<AppState>>,
+    Json(data): Json<AiSettingsUpdate>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let updates: Vec<(&str, String)> = [
+        data.provider.as_ref().map(|v| ("ai_provider", v.clone())),
+        data.api_key.as_ref().map(|v| ("ai_api_key", v.clone())),
+        data.model.as_ref().map(|v| ("ai_model", v.clone())),
+        data.auto_analysis.map(|v| ("ai_auto_analysis", if v { "true" } else { "false" }.into())),
+    ].into_iter().flatten().collect();
+
+    for (key, value) in &updates {
+        sqlx::query(
+            "INSERT INTO system_state (key, value, updated_at) VALUES (?, ?, datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')"
+        ).bind(key).bind(value).execute(&state.db).await?;
+    }
+
+    // If API key was provided, also update in-memory (for immediate use without restart)
+    // Note: full restart still needed for .env changes, but DB-stored key works immediately
+    if let Some(ref key) = data.api_key {
+        if !key.is_empty() {
+            std::env::set_var("ANTHROPIC_API_KEY", key);
+        }
+    }
+
+    let cli_available = crate::server::ai::claude_cli::is_available();
+
+    Ok(Json(serde_json::json!({
+        "message": "AI settings updated",
+        "cli_available": cli_available,
+    })))
 }
 
 async fn platform_health(

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use axum::{extract::{Path, Query, State}, http::StatusCode, routing::{get, put, delete}, Json, Router};
 use serde::{Deserialize, Serialize};
 use crate::server::{AppState, error::AppError};
-use crate::server::db::models::CampaignRow;
+use crate::server::db::models::{CampaignRow, serialize_tags_to_json_string, deserialize_tags_from_input, parse_json_column};
 
 #[derive(Deserialize)]
 pub struct ProfileIdFilter {
@@ -15,7 +15,10 @@ pub struct CampaignCreate {
     pub name: String,
     pub status: Option<String>,
     pub goal: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_tags_from_input")]
     pub target_audience: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_tags_from_input")]
+    pub tags: Option<String>,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
     pub notes: Option<String>,
@@ -28,7 +31,10 @@ pub struct CampaignUpdate {
     pub name: Option<String>,
     pub status: Option<String>,
     pub goal: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_tags_from_input")]
     pub target_audience: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_tags_from_input")]
+    pub tags: Option<String>,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
     pub notes: Option<String>,
@@ -42,7 +48,10 @@ pub struct CampaignResponse {
     pub name: String,
     pub status: Option<String>,
     pub goal: Option<String>,
+    #[serde(serialize_with = "serialize_tags_to_json_string")]
     pub target_audience: Option<String>,
+    #[serde(serialize_with = "serialize_tags_to_json_string")]
+    pub tags: Option<String>,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
     pub notes: Option<String>,
@@ -64,6 +73,7 @@ impl CampaignResponse {
             status: r.status,
             goal: r.goal,
             target_audience: r.target_audience,
+            tags: r.tags,
             start_date: r.start_date,
             end_date: r.end_date,
             notes: r.notes,
@@ -95,13 +105,13 @@ async fn list_campaigns(
 ) -> Result<Json<Vec<CampaignResponse>>, AppError> {
     let campaigns = if let Some(pid) = params.profile_id {
         sqlx::query_as::<_, CampaignRow>(
-            "SELECT id, product_id, profile_id, name, status, goal, target_audience,
+            "SELECT id, product_id, profile_id, name, status, goal, target_audience, tags,
                     start_date, end_date, notes, created_at, updated_at
              FROM campaigns WHERE profile_id = ? ORDER BY created_at DESC"
         ).bind(pid).fetch_all(&state.db).await?
     } else {
         sqlx::query_as::<_, CampaignRow>(
-            "SELECT id, product_id, profile_id, name, status, goal, target_audience,
+            "SELECT id, product_id, profile_id, name, status, goal, target_audience, tags,
                     start_date, end_date, notes, created_at, updated_at
              FROM campaigns ORDER BY created_at DESC"
         ).fetch_all(&state.db).await?
@@ -166,7 +176,8 @@ async fn get_campaign(
         "name": campaign.name,
         "status": campaign.status,
         "goal": campaign.goal,
-        "target_audience": campaign.target_audience,
+        "target_audience": parse_json_column(&campaign.target_audience),
+        "tags": parse_json_column(&campaign.tags),
         "start_date": campaign.start_date,
         "end_date": campaign.end_date,
         "notes": campaign.notes,
@@ -186,12 +197,13 @@ async fn create_campaign(
     let status = data.status.unwrap_or_else(|| "active".into());
 
     sqlx::query(
-        "INSERT INTO campaigns (id, product_id, profile_id, name, status, goal, target_audience, start_date, end_date, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO campaigns (id, product_id, profile_id, name, status, goal, target_audience, tags, start_date, end_date, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
         .bind(&id).bind(&data.product_id).bind(&data.profile_id)
         .bind(&data.name).bind(&status).bind(&data.goal)
-        .bind(&data.target_audience).bind(&data.start_date).bind(&data.end_date)
+        .bind(&data.target_audience).bind(&data.tags)
+        .bind(&data.start_date).bind(&data.end_date)
         .bind(&data.notes)
         .execute(&state.db).await?;
 
@@ -222,17 +234,18 @@ async fn update_campaign(
     let status = data.status.or(row.status);
     let goal = data.goal.or(row.goal);
     let target_audience = data.target_audience.or(row.target_audience);
+    let tags = data.tags.or(row.tags);
     let start_date = data.start_date.or(row.start_date);
     let end_date = data.end_date.or(row.end_date);
     let notes = data.notes.or(row.notes);
     let profile_id = data.profile_id.or(row.profile_id);
 
     sqlx::query(
-        "UPDATE campaigns SET product_id=?, name=?, status=?, goal=?, target_audience=?,
+        "UPDATE campaigns SET product_id=?, name=?, status=?, goal=?, target_audience=?, tags=?,
          start_date=?, end_date=?, notes=?, profile_id=?, updated_at=datetime('now') WHERE id=?"
     )
         .bind(&product_id).bind(&name).bind(&status).bind(&goal)
-        .bind(&target_audience).bind(&start_date).bind(&end_date)
+        .bind(&target_audience).bind(&tags).bind(&start_date).bind(&end_date)
         .bind(&notes).bind(&profile_id).bind(&campaign_id)
         .execute(&state.db).await?;
 

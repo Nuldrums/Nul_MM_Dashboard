@@ -40,6 +40,7 @@ export default function SettingsPage() {
   });
 
   // AI Config
+  const [aiProvider, setAiProvider] = useState<'cli' | 'api'>('cli');
   const [claudeKey, setClaudeKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [aiModel, setAiModel] = useState('claude-sonnet-4-20250514');
@@ -50,6 +51,14 @@ export default function SettingsPage() {
   const [credentialValue, setCredentialValue] = useState('');
 
   const [confirmReset, setConfirmReset] = useState(false);
+  const [aiTestLoading, setAiTestLoading] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState<{
+    success: boolean;
+    provider?: string;
+    model?: string;
+    response?: string;
+    error?: string;
+  } | null>(null);
 
   const handleTestPlatform = async (platform: string) => {
     try {
@@ -81,6 +90,7 @@ export default function SettingsPage() {
       await apiFetch('/settings/ai', {
         method: 'PUT',
         body: JSON.stringify({
+          provider: aiProvider,
           api_key: claudeKey || undefined,
           model: aiModel,
           auto_analysis: autoAnalysis,
@@ -88,6 +98,25 @@ export default function SettingsPage() {
       });
     } catch {
       // handle
+    }
+  };
+
+  const handleTestAi = async () => {
+    setAiTestLoading(true);
+    setAiTestResult(null);
+    try {
+      const result = await apiFetch<{
+        success: boolean;
+        provider?: string;
+        model?: string;
+        response?: string;
+        error?: string;
+      }>('/ai/test', { method: 'POST' });
+      setAiTestResult(result ?? { success: false, error: 'No response from server' });
+    } catch (e) {
+      setAiTestResult({ success: false, error: String(e) });
+    } finally {
+      setAiTestLoading(false);
     }
   };
 
@@ -258,8 +287,33 @@ export default function SettingsPage() {
         <h3>
           <Brain size={18} /> AI Configuration
         </h3>
+
         <div className="form-group">
-          <label>Claude API Key</label>
+          <label>AI Provider</label>
+          <select
+            className="form-select"
+            value={aiProvider}
+            onChange={(e) => setAiProvider(e.target.value as 'cli' | 'api')}
+          >
+            <option value="cli">Claude CLI (Subscription) — API key as fallback</option>
+            <option value="api">API Key Only</option>
+          </select>
+          <p className="text-muted" style={{ fontSize: '0.75rem', marginTop: 4 }}>
+            {aiProvider === 'cli'
+              ? 'Uses your Claude subscription via CLI. Falls back to API key if rate limited.'
+              : 'Uses Anthropic API directly. Requires an API key.'}
+          </p>
+        </div>
+
+        <div className="form-group">
+          <label>
+            Anthropic API Key
+            {aiProvider === 'cli' && (
+              <span className="text-muted" style={{ fontWeight: 400, fontSize: '0.8rem' }}>
+                {' '}(optional — fallback for rate limits)
+              </span>
+            )}
+          </label>
           <div className="flex-gap" style={{ gap: 6 }}>
             <input
               className="form-input"
@@ -282,6 +336,7 @@ export default function SettingsPage() {
             </button>
           </div>
         </div>
+
         <div className="form-group">
           <label>Model</label>
           <select
@@ -300,6 +355,7 @@ export default function SettingsPage() {
             </option>
           </select>
         </div>
+
         <div className="form-group">
           <label
             style={{
@@ -318,12 +374,61 @@ export default function SettingsPage() {
             Auto-analyze after fetching metrics
           </label>
         </div>
-        <button
-          className="btn btn-primary btn-sm"
-          onClick={handleSaveAiConfig}
-        >
-          Save AI Settings
-        </button>
+
+        <div className="flex-gap" style={{ gap: 8 }}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={handleSaveAiConfig}
+          >
+            Save AI Settings
+          </button>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={handleTestAi}
+            disabled={aiTestLoading}
+          >
+            <RefreshCw size={14} className={aiTestLoading ? 'spin' : ''} />{' '}
+            {aiTestLoading ? 'Testing...' : 'Test AI Connection'}
+          </button>
+        </div>
+
+        {aiTestResult && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: '10px 14px',
+              borderRadius: 8,
+              fontSize: '0.85rem',
+              backgroundColor: aiTestResult.success
+                ? 'color-mix(in srgb, var(--success) 15%, transparent)'
+                : 'color-mix(in srgb, var(--danger, #e53e3e) 15%, transparent)',
+              border: `1px solid ${aiTestResult.success ? 'var(--success)' : 'var(--danger, #e53e3e)'}`,
+            }}
+          >
+            {aiTestResult.success ? (
+              <>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  <CheckCircle size={14} style={{ color: 'var(--success)', verticalAlign: 'middle', marginRight: 6 }} />
+                  Connection successful
+                </div>
+                <div className="text-muted" style={{ fontSize: '0.8rem' }}>
+                  Provider: {aiTestResult.provider === 'cli' ? 'Claude CLI (subscription)' : 'API'} &middot; Model: {aiTestResult.model}
+                </div>
+                <div style={{ marginTop: 6, fontStyle: 'italic' }}>
+                  &ldquo;{aiTestResult.response}&rdquo;
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  <XCircle size={14} style={{ color: 'var(--danger, #e53e3e)', verticalAlign: 'middle', marginRight: 6 }} />
+                  Connection failed
+                </div>
+                <div style={{ fontSize: '0.8rem' }}>{aiTestResult.error}</div>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Appearance */}

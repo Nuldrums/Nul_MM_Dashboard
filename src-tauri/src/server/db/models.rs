@@ -84,6 +84,7 @@ pub struct CampaignRow {
     pub status: Option<String>,
     pub goal: Option<String>,
     pub target_audience: Option<String>,
+    pub tags: Option<String>,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
     pub notes: Option<String>,
@@ -149,6 +150,30 @@ pub struct SystemStateRow {
     pub key: String,
     pub value: Option<String>,
     pub updated_at: Option<NaiveDateTime>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct KnowledgeVectorRow {
+    pub id: String,
+    pub doc_type: String,
+    pub content: String,
+    pub embedding: Vec<u8>,
+    pub metadata: Option<String>,
+    pub campaign_id: Option<String>,
+    pub created_at: Option<NaiveDateTime>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct AnalysisMetricSnapshotRow {
+    pub id: i64,
+    pub analysis_id: String,
+    pub post_id: String,
+    pub views: Option<i64>,
+    pub likes: Option<i64>,
+    pub comments: Option<i64>,
+    pub shares: Option<i64>,
+    pub saves: Option<i64>,
+    pub clicks: Option<i64>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, ArrowLeft, Package } from 'lucide-react';
+import { Plus, ArrowLeft, Package, Brain, RefreshCw } from 'lucide-react';
 import { useCreateCampaign } from '../hooks/useCampaigns';
 import { useActiveProfile } from '../hooks/useActiveProfile';
 import { apiFetch } from '../hooks/useApi';
+import TagInput from '../components/TagInput';
 import type { Product } from '../lib/types';
 
 const GOALS = [
@@ -29,7 +30,8 @@ export default function PostComposer() {
   const [name, setName] = useState('');
   const [productId, setProductId] = useState('');
   const [goal, setGoal] = useState('awareness');
-  const [audience, setAudience] = useState('');
+  const [audienceTags, setAudienceTags] = useState<string[]>([]);
+  const [campaignTags, setCampaignTags] = useState<string[]>([]);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [notes, setNotes] = useState('');
@@ -42,6 +44,11 @@ export default function PostComposer() {
   const [newProductPrice, setNewProductPrice] = useState('');
   const [creatingProduct, setCreatingProduct] = useState(false);
   const [error, setError] = useState('');
+
+  // AI Recommendations
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiRecs, setAiRecs] = useState<any>(null);
+  const [aiError, setAiError] = useState('');
 
   const handleCreateProduct = async () => {
     if (!newProductName.trim()) return;
@@ -72,6 +79,37 @@ export default function PostComposer() {
     }
   };
 
+  const selectedProduct = products?.find((p) => p.id === productId);
+
+  const handleGetRecommendations = async () => {
+    if (!selectedProduct) return;
+    setAiLoading(true);
+    setAiError('');
+    setAiRecs(null);
+    try {
+      const result = await apiFetch<any>('/ai/campaign-recommendations', {
+        method: 'POST',
+        body: JSON.stringify({
+          product_name: selectedProduct.name,
+          product_type: selectedProduct.type,
+          product_description: selectedProduct.description || '',
+          goal: goal || undefined,
+          target_audience: audienceTags.join(', ') || undefined,
+          platforms: [],
+        }),
+      });
+      if (result?.success) {
+        setAiRecs(result.recommendations);
+      } else {
+        setAiError(result?.error || 'Failed to get recommendations');
+      }
+    } catch (e) {
+      setAiError(String(e));
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -91,7 +129,8 @@ export default function PostComposer() {
         product_id: productId,
         profile_id: activeProfileId || undefined,
         goal,
-        target_audience: audience || undefined,
+        target_audience: audienceTags.length > 0 ? audienceTags : undefined,
+        tags: campaignTags.length > 0 ? campaignTags : undefined,
         start_date: startDate || undefined,
         end_date: endDate || undefined,
         notes: notes || undefined,
@@ -245,12 +284,19 @@ export default function PostComposer() {
 
           <div className="form-group">
             <label>Target Audience</label>
-            <input
-              className="form-input"
-              type="text"
-              value={audience}
-              onChange={(e) => setAudience(e.target.value)}
+            <TagInput
+              tags={audienceTags}
+              onChange={setAudienceTags}
               placeholder="e.g., Indie developers, content creators"
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Tags</label>
+            <TagInput
+              tags={campaignTags}
+              onChange={setCampaignTags}
+              placeholder="e.g., product-launch, Q2"
             />
           </div>
 
@@ -284,6 +330,99 @@ export default function PostComposer() {
               placeholder="Any additional notes about this campaign..."
             />
           </div>
+
+          {/* AI Recommendations */}
+          {selectedProduct && (
+            <div style={{ marginBottom: 16 }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={handleGetRecommendations}
+                disabled={aiLoading}
+              >
+                {aiLoading ? (
+                  <><RefreshCw size={14} className="spin" /> Getting Recommendations...</>
+                ) : (
+                  <><Brain size={14} /> Get AI Strategy Recommendations</>
+                )}
+              </button>
+
+              {aiError && (
+                <div style={{
+                  marginTop: 8, padding: '8px 12px', fontSize: '0.85rem',
+                  background: 'color-mix(in srgb, var(--danger, #e53e3e) 15%, transparent)',
+                  border: '1px solid var(--danger, #e53e3e)',
+                  borderRadius: 'var(--radius-sm)',
+                }}>{aiError}</div>
+              )}
+
+              {aiRecs && (
+                <div style={{
+                  marginTop: 12, padding: 16,
+                  background: 'var(--bg-secondary)',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--border)',
+                }}>
+                  <h4 style={{ margin: '0 0 12px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Brain size={16} /> AI Strategy Recommendations
+                    <span className="text-muted" style={{ fontSize: '0.75rem', fontWeight: 400 }}>
+                      Confidence: {aiRecs.confidence || 'unknown'}
+                      {aiRecs.based_on_campaigns > 0 && ` (based on ${aiRecs.based_on_campaigns} past campaigns)`}
+                    </span>
+                  </h4>
+
+                  {aiRecs.platform_recommendations?.length > 0 && (
+                    <div style={{ marginBottom: 12 }}>
+                      <h5 style={{ margin: '0 0 6px', fontSize: '0.85rem' }}>Platform Priorities</h5>
+                      {aiRecs.platform_recommendations.map((r: any, i: number) => (
+                        <div key={i} style={{ fontSize: '0.8rem', marginBottom: 4, paddingLeft: 8 }}>
+                          <strong>{r.platform}</strong> ({r.priority}) — {r.reasoning}
+                          {r.suggested_communities?.length > 0 && (
+                            <div className="text-muted" style={{ paddingLeft: 8 }}>
+                              Targets: {r.suggested_communities.join(', ')}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {aiRecs.content_strategy?.length > 0 && (
+                    <div style={{ marginBottom: 12 }}>
+                      <h5 style={{ margin: '0 0 6px', fontSize: '0.85rem' }}>Content Strategy</h5>
+                      {aiRecs.content_strategy.map((r: any, i: number) => (
+                        <div key={i} style={{ fontSize: '0.8rem', marginBottom: 4, paddingLeft: 8 }}>
+                          <strong>{r.format}</strong> ({r.priority}) — {r.reasoning}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {aiRecs.timing_suggestions?.length > 0 && (
+                    <div style={{ marginBottom: 12 }}>
+                      <h5 style={{ margin: '0 0 6px', fontSize: '0.85rem' }}>Timing</h5>
+                      {aiRecs.timing_suggestions.map((r: any, i: number) => (
+                        <div key={i} style={{ fontSize: '0.8rem', marginBottom: 4, paddingLeft: 8 }}>
+                          {r.suggestion} — <span className="text-muted">{r.reasoning}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {aiRecs.warnings?.length > 0 && (
+                    <div>
+                      <h5 style={{ margin: '0 0 6px', fontSize: '0.85rem', color: 'var(--danger, #e53e3e)' }}>Warnings</h5>
+                      {aiRecs.warnings.map((w: any, i: number) => (
+                        <div key={i} style={{ fontSize: '0.8rem', marginBottom: 4, paddingLeft: 8 }}>
+                          {w.warning} <span className="text-muted">({w.source})</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {error && (
             <div style={{

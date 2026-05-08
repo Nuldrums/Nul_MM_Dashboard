@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use axum::{extract::{Path, State}, routing::{get, post}, Json, Router};
-use serde::Serialize;
+use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post, put, delete}, Json, Router};
+use serde::{Deserialize, Serialize};
 use crate::server::{AppState, error::AppError};
 use crate::server::db::models::MetricSnapshotRow;
 use crate::server::services::metric_collector;
@@ -49,9 +49,25 @@ impl From<MetricSnapshotRow> for MetricSnapshotResponse {
     }
 }
 
+#[derive(Deserialize)]
+pub struct ManualMetricInput {
+    pub snapshot_date: Option<String>,
+    pub views: Option<i64>,
+    pub impressions: Option<i64>,
+    pub likes: Option<i64>,
+    pub dislikes: Option<i64>,
+    pub comments: Option<i64>,
+    pub shares: Option<i64>,
+    pub saves: Option<i64>,
+    pub clicks: Option<i64>,
+    pub watch_time_seconds: Option<i64>,
+    pub followers_gained: Option<i64>,
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/posts/{post_id}/metrics", get(get_post_metrics))
+        .route("/api/posts/{post_id}/metrics", get(get_post_metrics).post(add_manual_metric))
+        .route("/api/metrics/{metric_id}", put(update_metric).delete(delete_metric))
         .route("/api/campaigns/{campaign_id}/metrics", get(get_campaign_metrics))
         .route("/api/metrics/fetch", post(trigger_fetch))
         .route("/api/metrics/fetch/status", get(fetch_status))
@@ -150,4 +166,116 @@ async fn fetch_status(
         "running": running,
         "last_completed": last.and_then(|r| r.0),
     }))
+}
+
+async fn add_manual_metric(
+    State(state): State<Arc<AppState>>,
+    Path(post_id): Path<String>,
+    Json(data): Json<ManualMetricInput>,
+) -> Result<(StatusCode, Json<MetricSnapshotResponse>), AppError> {
+    let exists: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM posts WHERE id = ?"
+    ).bind(&post_id).fetch_optional(&state.db).await?;
+    if exists.is_none() {
+        return Err(AppError::NotFound("Post not found".into()));
+    }
+
+    let snapshot_date = data.snapshot_date
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+
+    sqlx::query(
+        "INSERT INTO metric_snapshots (post_id, snapshot_date, views, impressions, likes, dislikes,
+         comments, shares, saves, clicks, watch_time_seconds, followers_gained, fetched_via)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(post_id, snapshot_date) DO UPDATE SET
+           views=excluded.views, impressions=excluded.impressions, likes=excluded.likes,
+           dislikes=excluded.dislikes, comments=excluded.comments, shares=excluded.shares,
+           saves=excluded.saves, clicks=excluded.clicks, watch_time_seconds=excluded.watch_time_seconds,
+           followers_gained=excluded.followers_gained, fetched_via=excluded.fetched_via"
+    )
+        .bind(&post_id).bind(&snapshot_date)
+        .bind(data.views.unwrap_or(0)).bind(data.impressions.unwrap_or(0))
+        .bind(data.likes.unwrap_or(0)).bind(data.dislikes.unwrap_or(0))
+        .bind(data.comments.unwrap_or(0)).bind(data.shares.unwrap_or(0))
+        .bind(data.saves.unwrap_or(0)).bind(data.clicks.unwrap_or(0))
+        .bind(data.watch_time_seconds).bind(data.followers_gained.unwrap_or(0))
+        .bind("manual")
+        .execute(&state.db).await?;
+
+    let row = sqlx::query_as::<_, MetricSnapshotRow>(
+        "SELECT id, post_id, snapshot_date, views, impressions, likes, dislikes, comments,
+                shares, saves, clicks, watch_time_seconds, followers_gained, custom_metrics,
+                fetched_via, created_at
+         FROM metric_snapshots WHERE post_id = ? AND snapshot_date = ?"
+    ).bind(&post_id).bind(&snapshot_date).fetch_one(&state.db).await?;
+
+    Ok((StatusCode::CREATED, Json(row.into())))
+}
+
+async fn update_metric(
+    State(state): State<Arc<AppState>>,
+    Path(metric_id): Path<i64>,
+    Json(data): Json<ManualMetricInput>,
+) -> Result<Json<MetricSnapshotResponse>, AppError> {
+    let existing = sqlx::query_as::<_, MetricSnapshotRow>(
+        "SELECT id, post_id, snapshot_date, views, impressions, likes, dislikes, comments,
+                shares, saves, clicks, watch_time_seconds, followers_gained, custom_metrics,
+                fetched_via, created_at
+         FROM metric_snapshots WHERE id = ?"
+    ).bind(metric_id).fetch_optional(&state.db).await?;
+
+    if existing.is_none() {
+        return Err(AppError::NotFound("Metric snapshot not found".into()));
+    }
+    let row = existing.unwrap();
+
+    let snapshot_date = data.snapshot_date.unwrap_or(row.snapshot_date);
+    let views = data.views.unwrap_or(row.views.unwrap_or(0));
+    let impressions = data.impressions.unwrap_or(row.impressions.unwrap_or(0));
+    let likes = data.likes.unwrap_or(row.likes.unwrap_or(0));
+    let dislikes = data.dislikes.unwrap_or(row.dislikes.unwrap_or(0));
+    let comments = data.comments.unwrap_or(row.comments.unwrap_or(0));
+    let shares = data.shares.unwrap_or(row.shares.unwrap_or(0));
+    let saves = data.saves.unwrap_or(row.saves.unwrap_or(0));
+    let clicks = data.clicks.unwrap_or(row.clicks.unwrap_or(0));
+    let watch_time_seconds = data.watch_time_seconds.or(row.watch_time_seconds);
+    let followers_gained = data.followers_gained.unwrap_or(row.followers_gained.unwrap_or(0));
+
+    sqlx::query(
+        "UPDATE metric_snapshots SET snapshot_date=?, views=?, impressions=?, likes=?, dislikes=?,
+         comments=?, shares=?, saves=?, clicks=?, watch_time_seconds=?, followers_gained=?
+         WHERE id=?"
+    )
+        .bind(&snapshot_date).bind(views).bind(impressions).bind(likes).bind(dislikes)
+        .bind(comments).bind(shares).bind(saves).bind(clicks)
+        .bind(watch_time_seconds).bind(followers_gained)
+        .bind(metric_id)
+        .execute(&state.db).await?;
+
+    let updated = sqlx::query_as::<_, MetricSnapshotRow>(
+        "SELECT id, post_id, snapshot_date, views, impressions, likes, dislikes, comments,
+                shares, saves, clicks, watch_time_seconds, followers_gained, custom_metrics,
+                fetched_via, created_at
+         FROM metric_snapshots WHERE id = ?"
+    ).bind(metric_id).fetch_one(&state.db).await?;
+
+    Ok(Json(updated.into()))
+}
+
+async fn delete_metric(
+    State(state): State<Arc<AppState>>,
+    Path(metric_id): Path<i64>,
+) -> Result<StatusCode, AppError> {
+    let existing: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM metric_snapshots WHERE id = ?"
+    ).bind(metric_id).fetch_optional(&state.db).await?;
+
+    if existing.is_none() {
+        return Err(AppError::NotFound("Metric snapshot not found".into()));
+    }
+
+    sqlx::query("DELETE FROM metric_snapshots WHERE id = ?")
+        .bind(metric_id).execute(&state.db).await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }

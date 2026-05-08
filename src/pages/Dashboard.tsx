@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BarChart3,
   FileText,
@@ -21,11 +22,17 @@ interface OverviewStats {
   avg_ai_score: number;
 }
 
+type ToastState = { message: string; type: 'success' | 'error' } | null;
+
 export default function Dashboard() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { activeProfileId, activeProfile } = useActiveProfile();
   const profileParam = activeProfileId ? `?profile_id=${activeProfileId}` : '';
   const { data: campaigns, isLoading } = useCampaigns(activeProfileId);
+  const [fetchingMetrics, setFetchingMetrics] = useState(false);
+  const [runningAnalysis, setRunningAnalysis] = useState(false);
+  const [toast, setToast] = useState<ToastState>(null);
 
   const { data: overview } = useQuery<OverviewStats>({
     queryKey: ['analytics', 'overview', activeProfileId ?? 'all'],
@@ -37,19 +44,35 @@ export default function Dashboard() {
     queryFn: () => apiFetch<{ insight: string }>('/ai/cross-campaign-insight'),
   });
 
+  const showToast = (message: string, type: 'success' | 'error') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
   const handleFetchMetrics = async () => {
+    setFetchingMetrics(true);
     try {
       await apiFetch('/metrics/fetch', { method: 'POST' });
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+      queryClient.invalidateQueries({ queryKey: ['analytics'] });
+      showToast('Metric fetch completed', 'success');
     } catch {
-      // silently handle
+      showToast('Metric fetch failed', 'error');
+    } finally {
+      setFetchingMetrics(false);
     }
   };
 
   const handleRunAnalysis = async () => {
+    setRunningAnalysis(true);
     try {
       await apiFetch('/ai/analyze', { method: 'POST' });
+      queryClient.invalidateQueries({ queryKey: ['ai'] });
+      showToast('AI analysis completed', 'success');
     } catch {
-      // silently handle
+      showToast('AI analysis failed', 'error');
+    } finally {
+      setRunningAnalysis(false);
     }
   };
 
@@ -131,13 +154,39 @@ export default function Dashboard() {
         >
           <Plus size={16} /> New Campaign
         </button>
-        <button className="btn btn-secondary" onClick={handleFetchMetrics}>
-          <RefreshCw size={16} /> Fetch Metrics Now
+        <button
+          className="btn btn-secondary"
+          onClick={handleFetchMetrics}
+          disabled={fetchingMetrics}
+        >
+          <RefreshCw size={16} className={fetchingMetrics ? 'spin' : ''} />{' '}
+          {fetchingMetrics ? 'Fetching...' : 'Fetch Metrics Now'}
         </button>
-        <button className="btn btn-secondary" onClick={handleRunAnalysis}>
-          <Zap size={16} /> Run AI Analysis
+        <button
+          className="btn btn-secondary"
+          onClick={handleRunAnalysis}
+          disabled={runningAnalysis}
+        >
+          <Zap size={16} />{' '}
+          {runningAnalysis ? 'Analyzing...' : 'Run AI Analysis'}
         </button>
       </div>
+
+      {toast && (
+        <div
+          style={{
+            padding: '10px 16px',
+            borderRadius: 'var(--radius-sm)',
+            marginBottom: 16,
+            fontSize: '0.875rem',
+            background: toast.type === 'success' ? 'var(--success-bg, rgba(34,197,94,0.12))' : 'var(--danger-bg, rgba(239,68,68,0.12))',
+            color: toast.type === 'success' ? 'var(--success, #22c55e)' : 'var(--danger, #ef4444)',
+            border: `1px solid ${toast.type === 'success' ? 'var(--success, #22c55e)' : 'var(--danger, #ef4444)'}`,
+          }}
+        >
+          {toast.message}
+        </div>
+      )}
 
       {/* Campaign Grid */}
       {isLoading ? (
