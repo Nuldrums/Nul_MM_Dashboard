@@ -13,7 +13,7 @@ export function useFeeds(campaignId: string) {
 export function useCreateFeed(campaignId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { platform: string; account_handle: string; content_type: string }) =>
+    mutationFn: (data: { profile_account_id: string; content_type: string }) =>
       apiFetch<CampaignFeed>(`/campaigns/${campaignId}/feeds`, {
         method: 'POST',
         body: JSON.stringify(data),
