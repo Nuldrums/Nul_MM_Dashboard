@@ -18,9 +18,17 @@ function getScoreClass(score?: number) {
 export default function CampaignCard({ campaign }: CampaignCardProps) {
   const navigate = useNavigate();
 
-  const platforms = Array.from(
-    new Set(campaign.posts?.map((p) => p.platform) ?? [])
-  );
+  const platforms = campaign.platforms?.length
+    ? campaign.platforms
+    : Array.from(new Set(campaign.posts?.map((p) => p.platform) ?? []));
+
+  const postCount = campaign.post_count ?? campaign.posts?.length ?? 0;
+  const totalEngagement =
+    (campaign.total_likes ?? 0) +
+    (campaign.total_comments ?? 0);
+  const avgEngagement =
+    campaign.metrics_summary?.avg_engagement ??
+    (postCount > 0 ? totalEngagement / postCount : 0);
 
   const sparklineData =
     campaign.posts
@@ -28,9 +36,7 @@ export default function CampaignCard({ campaign }: CampaignCardProps) {
       .sort((a, b) => (a.posted_at! > b.posted_at! ? 1 : -1))
       .map((_, i) => ({
         date: String(i),
-        value:
-          (campaign.metrics_summary?.avg_engagement ?? 1) * (i + 1) * 0.5 +
-          i * 2,
+        value: (avgEngagement || 1) * (i + 1) * 0.5 + i * 2,
       })) ?? [];
 
   const score = campaign.metrics_summary?.ai_score;
@@ -83,8 +89,8 @@ export default function CampaignCard({ campaign }: CampaignCardProps) {
 
       <div className="flex-between">
         <span className="text-muted">
-          {campaign.posts?.length ?? 0} post
-          {(campaign.posts?.length ?? 0) !== 1 ? 's' : ''}
+          {postCount} post{postCount !== 1 ? 's' : ''}
+          {totalEngagement > 0 && ` · ${totalEngagement.toLocaleString()} engagement`}
         </span>
         {score != null && score > 0 ? (
           <span

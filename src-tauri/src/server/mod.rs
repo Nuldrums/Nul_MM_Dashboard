@@ -8,9 +8,18 @@ pub mod services;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::collections::HashMap;
 use axum::{Router, extract::Request, middleware, response::Response};
+use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+#[derive(Debug, Clone)]
+pub struct OAuthPendingState {
+    pub profile_id: String,
+    pub platform: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
 
 pub struct AppState {
     pub db: sqlx::SqlitePool,
@@ -18,6 +27,7 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub analysis_running: AtomicBool,
     pub fetch_running: AtomicBool,
+    pub oauth_pending: Mutex<HashMap<String, OAuthPendingState>>,
 }
 
 /// Initialize tracing (file + stderr). Call ONCE before anything else.
@@ -68,6 +78,7 @@ pub async fn start_server() -> anyhow::Result<()> {
         http_client: reqwest::Client::new(),
         analysis_running: AtomicBool::new(false),
         fetch_running: AtomicBool::new(false),
+        oauth_pending: Mutex::new(HashMap::new()),
     });
 
     // Start background scheduler

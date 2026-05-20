@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -18,15 +18,43 @@ import {
   Target,
   X,
   Brain,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useCampaign, useUpdateCampaign, useDeleteCampaign } from '../hooks/useCampaigns';
+import { useFeeds, useCreateFeed, useDeleteFeed } from '../hooks/useFeeds';
+import { useAccounts } from '../hooks/useAccounts';
 import { apiFetch } from '../hooks/useApi';
 import type { Post, AIAnalysis, Platform, PostType } from '../lib/types';
-import { PLATFORM_NAMES } from '../lib/constants';
+import { PLATFORM_NAMES, PLATFORM_COLORS } from '../lib/constants';
+
+function formatCount(n: number): string {
+  // Show full number with thousands separators below 10K; abbreviate above.
+  if (n < 10_000) return n.toLocaleString();
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 100_000 ? 1 : 0)}K`;
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`;
+  return `${(n / 1_000_000_000).toFixed(1)}B`;
+}
 import PostRow from '../components/PostRow';
 import EngagementChart from '../components/EngagementChart';
 import AIRecommendation from '../components/AIRecommendation';
-import TagInput from '../components/TagInput';
+
+const FEED_CONTENT_TYPES: Record<string, { value: string; label: string }[]> = {
+  youtube: [
+    { value: 'long_form', label: 'Long-form videos' },
+    { value: 'short_form', label: 'Shorts (≤3 min)' },
+    { value: 'live', label: 'Live streams (completed)' },
+  ],
+  x: [
+    { value: 'tweets', label: 'Original tweets' },
+    { value: 'replies', label: 'Replies' },
+    { value: 'media', label: 'Media tweets' },
+    { value: 'broadcasts', label: 'Live broadcasts' },
+  ],
+  tiktok: [{ value: 'videos', label: 'Videos' }],
+};
 
 const PLATFORMS: Platform[] = [
   'reddit',
@@ -50,7 +78,7 @@ const POST_TYPES: PostType[] = [
   'self_promo',
 ];
 
-const API_TRACKED_PLATFORMS = ['reddit', 'youtube', 'x'];
+const API_TRACKED_PLATFORMS = ['reddit', 'youtube', 'x', 'tiktok'];
 
 function detectPlatformFromUrl(url: string): Platform | '' {
   if (!url) return '';
@@ -67,33 +95,36 @@ function detectPlatformFromUrl(url: string): Platform | '' {
   return '';
 }
 
-function extractPlatformPostId(url: string, platform: string): string | undefined {
-  if (!url) return undefined;
+function extractPlatformPostId(url: string, platform: string): string {
+  if (!url) return '';
   try {
     const u = new URL(url);
+    const path = u.pathname;
     switch (platform) {
-      case 'reddit': {
-        // https://reddit.com/r/sub/comments/POST_ID/slug
-        const match = u.pathname.match(/\/comments\/([a-z0-9]+)/i);
-        return match?.[1];
-      }
       case 'youtube': {
-        // https://youtube.com/watch?v=VIDEO_ID or https://youtu.be/VIDEO_ID
-        if (u.hostname.includes('youtu.be')) {
-          return u.pathname.slice(1).split('/')[0] || undefined;
-        }
-        return u.searchParams.get('v') ?? undefined;
+        if (u.hostname.includes('youtu.be')) return path.replace(/^\//, '').split('/')[0] ?? '';
+        const m = path.match(/^\/shorts\/([^/?]+)/);
+        if (m) return m[1];
+        const v = u.searchParams.get('v');
+        if (v) return v;
+        const embed = path.match(/^\/embed\/([^/?]+)/);
+        if (embed) return embed[1];
+        return '';
       }
-      case 'x': {
-        // https://x.com/user/status/TWEET_ID or twitter.com/user/status/TWEET_ID
-        const match = u.pathname.match(/\/status\/(\d+)/);
-        return match?.[1];
+      case 'reddit': {
+        const m = path.match(/\/comments\/([a-z0-9]+)/i);
+        return m ? m[1] : '';
+      }
+      case 'x':
+      case 'twitter': {
+        const m = path.match(/\/status\/(\d+)/);
+        return m ? m[1] : '';
       }
       default:
-        return undefined;
+        return '';
     }
   } catch {
-    return undefined;
+    return '';
   }
 }
 
@@ -107,51 +138,101 @@ export default function CampaignDetail() {
   const [confirmPermanentDelete, setConfirmPermanentDelete] = useState(false);
 
   const [tab, setTab] = useState<
-    'posts' | 'metrics' | 'ai' | 'overview' | 'settings'
+    'posts' | 'metrics' | 'ai' | 'settings'
   >('posts');
-  const [showAddPost, setShowAddPost] = useState(false);
 
-  // Add Post form state
-  // Track when the window just regained focus so we can ignore the
-  // first overlay click (which would otherwise close the modal).
-  const justFocusedRef = useRef(false);
-  useEffect(() => {
-    const onFocus = () => {
-      justFocusedRef.current = true;
-      // Clear after a short delay — only the very first click is suppressed
-      setTimeout(() => { justFocusedRef.current = false; }, 300);
-    };
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, []);
+  type SortKey = 'posted_at' | 'community' | 'views' | 'likes' | 'comments';
+  type SortDir = 'asc' | 'desc';
+  const [sortKey, setSortKey] = useState<SortKey>('posted_at');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
-  const handleOverlayClick = () => {
-    if (justFocusedRef.current) {
-      justFocusedRef.current = false;
-      return; // Ignore this click — it's the window-refocus click
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      // Sensible defaults per column type: dates and numbers descend, strings ascend.
+      setSortDir(key === 'community' ? 'asc' : 'desc');
     }
-    setShowAddPost(false);
   };
 
+  const sortedPosts = useMemo(() => {
+    const posts = [...(campaign?.posts ?? [])];
+    posts.sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === 'community') {
+        const av = (a.target_community ?? '').toLowerCase();
+        const bv = (b.target_community ?? '').toLowerCase();
+        // Empty values always sort to the end, regardless of direction
+        if (!av && !bv) cmp = 0;
+        else if (!av) return 1;
+        else if (!bv) return -1;
+        else cmp = av.localeCompare(bv);
+      } else if (sortKey === 'posted_at') {
+        const av = a.posted_at ? new Date(a.posted_at).getTime() : 0;
+        const bv = b.posted_at ? new Date(b.posted_at).getTime() : 0;
+        cmp = av - bv;
+      } else {
+        const av = a[sortKey] ?? 0;
+        const bv = b[sortKey] ?? 0;
+        cmp = av - bv;
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return posts;
+  }, [campaign?.posts, sortKey, sortDir]);
+
+  const SortHeader = ({ label, sortKey: key, align }: { label: string; sortKey: SortKey; align?: 'left' | 'right' }) => {
+    const active = sortKey === key;
+    return (
+      <th
+        style={{
+          cursor: 'pointer',
+          userSelect: 'none',
+          textAlign: align ?? 'left',
+        }}
+        onClick={() => toggleSort(key)}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, justifyContent: align === 'right' ? 'flex-end' : 'flex-start', width: '100%' }}>
+          {label}
+          {active
+            ? (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)
+            : <ChevronsUpDown size={12} style={{ opacity: 0.35 }} />}
+        </span>
+      </th>
+    );
+  };
+  const [showAddPost, setShowAddPost] = useState(false);
+  const [showAddFeed, setShowAddFeed] = useState(false);
+
+  // Add Post form state
   const [postUrl, setPostUrl] = useState('');
   const [postPlatform, setPostPlatform] = useState<string>('');
   const [postType, setPostType] = useState<string>('text');
   const [postTitle, setPostTitle] = useState('');
   const [postCommunity, setPostCommunity] = useState('');
-  const [postPostedAt, setPostPostedAt] = useState('');
+  const [postPlatformId, setPostPlatformId] = useState('');
+
+  // Add Feed form state
+  const [feedAccountId, setFeedAccountId] = useState<string>('');
+  const [feedContentType, setFeedContentType] = useState<string>('long_form');
+
+  // Feeds for this campaign
+  const { data: feeds = [] } = useFeeds(id ?? '');
+  const createFeed = useCreateFeed(id ?? '');
+  const deleteFeed = useDeleteFeed(id ?? '');
 
   // Settings form state
   const [editName, setEditName] = useState('');
   const [editGoal, setEditGoal] = useState('');
-  const [editAudienceTags, setEditAudienceTags] = useState<string[]>([]);
-  const [editCampaignTags, setEditCampaignTags] = useState<string[]>([]);
+  const [editAudience, setEditAudience] = useState('');
   const [settingsInit, setSettingsInit] = useState(false);
 
   // Fetch AI analysis
   const { data: analysis } = useQuery<AIAnalysis>({
     queryKey: ['ai', 'campaign', id],
     queryFn: () => apiFetch<AIAnalysis>(`/ai/campaigns/${id}/latest`),
-    enabled: (tab === 'ai' || tab === 'overview') && !!id,
+    enabled: tab === 'ai' && !!id,
   });
 
   // Fetch campaign metrics for charts
@@ -195,6 +276,7 @@ export default function CampaignDetail() {
         body: JSON.stringify(data),
       }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
       queryClient.invalidateQueries({ queryKey: ['campaigns', id] });
       setShowAddPost(false);
       resetPostForm();
@@ -207,30 +289,54 @@ export default function CampaignDetail() {
     setPostType('text');
     setPostTitle('');
     setPostCommunity('');
-    setPostPostedAt('');
+    setPostPlatformId('');
   };
 
   const handleUrlChange = (url: string) => {
     setPostUrl(url);
     const detected = detectPlatformFromUrl(url);
-    if (detected) setPostPlatform(detected);
-    if (url && !postPostedAt) {
-      setPostPostedAt(new Date().toISOString().slice(0, 10));
+    if (detected) {
+      setPostPlatform(detected);
+      const extractedId = extractPlatformPostId(url, detected);
+      if (extractedId) setPostPlatformId(extractedId);
     }
+  };
+
+  // Connected accounts for the campaign's profile — filtered to feed-capable platforms.
+  const { data: profileAccounts = [] } = useAccounts(campaign?.profile_id ?? null);
+  const feedCapableAccounts = profileAccounts.filter((a) =>
+    ['youtube', 'x', 'tiktok'].includes(a.platform)
+  );
+
+  const selectedAccount = feedCapableAccounts.find((a) => a.id === feedAccountId);
+
+  const handleAddFeed = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!feedAccountId || !feedContentType) return;
+    createFeed.mutate(
+      {
+        profile_account_id: feedAccountId,
+        content_type: feedContentType,
+      },
+      {
+        onSuccess: () => {
+          setShowAddFeed(false);
+          setFeedAccountId('');
+        },
+      }
+    );
   };
 
   const handleAddPost = (e: React.FormEvent) => {
     e.preventDefault();
     const platform = postPlatform || 'other';
-    const platformPostId = extractPlatformPostId(postUrl, platform);
     addPostMutation.mutate({
       platform,
       post_type: postType,
       url: postUrl || undefined,
       title: postTitle || undefined,
       target_community: postCommunity || undefined,
-      posted_at: postPostedAt || undefined,
-      platform_post_id: platformPostId,
+      platform_post_id: postPlatformId || undefined,
       is_api_tracked: API_TRACKED_PLATFORMS.includes(platform),
       tags: [],
     });
@@ -240,8 +346,7 @@ export default function CampaignDetail() {
   if (campaign && !settingsInit) {
     setEditName(campaign.name);
     setEditGoal(campaign.goal ?? '');
-    setEditAudienceTags(campaign.target_audience ?? []);
-    setEditCampaignTags(campaign.tags ?? []);
+    setEditAudience((campaign.target_audience ?? []).join(', '));
     setSettingsInit(true);
   }
 
@@ -251,8 +356,9 @@ export default function CampaignDetail() {
       id,
       name: editName,
       goal: editGoal || undefined,
-      target_audience: editAudienceTags.length > 0 ? editAudienceTags : undefined,
-      tags: editCampaignTags.length > 0 ? editCampaignTags : undefined,
+      target_audience: editAudience
+        ? editAudience.split(',').map((s) => s.trim()).filter(Boolean)
+        : undefined,
     });
   };
 
@@ -321,9 +427,47 @@ export default function CampaignDetail() {
 
       <div className="flex-between" style={{ marginBottom: 8 }}>
         <div>
-          <h2 style={{ fontSize: '1.5rem', fontWeight: 700, margin: 0 }}>
-            {campaign.name}
-          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 700, margin: 0 }}>
+              {campaign.name}
+            </h2>
+            {(() => {
+              // One pill per unique account (a profile_account can back multiple feeds —
+              // e.g. YouTube long-form + shorts — but its follower count is the same).
+              const seen = new Set<string>();
+              return feeds
+                .filter(f => {
+                  if (seen.has(f.profile_account_id)) return false;
+                  seen.add(f.profile_account_id);
+                  return f.follower_count != null;
+                })
+                .map(f => (
+                  <span
+                    key={f.profile_account_id}
+                    title={`${PLATFORM_NAMES[f.platform] ?? f.platform} · ${f.account_handle}${f.follower_count_at ? ` (updated ${new Date(f.follower_count_at).toLocaleString()})` : ''}`}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '3px 10px',
+                      borderRadius: 999,
+                      background: 'var(--bg-tertiary)',
+                      fontSize: '0.85rem',
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        backgroundColor: PLATFORM_COLORS[f.platform] ?? PLATFORM_COLORS.other,
+                      }}
+                    />
+                    <span style={{ fontWeight: 600 }}>{formatCount(f.follower_count!)}</span>
+                  </span>
+                ));
+            })()}
+          </div>
           <div
             className="flex-gap"
             style={{ marginTop: 6, gap: 12, flexWrap: 'wrap' }}
@@ -371,7 +515,7 @@ export default function CampaignDetail() {
 
       {/* Tab Bar */}
       <div className="tab-bar" style={{ marginTop: 20 }}>
-        {(['posts', 'metrics', 'ai', 'overview', 'settings'] as const).map((t) => (
+        {(['posts', 'metrics', 'ai', 'settings'] as const).map((t) => (
           <button
             key={t}
             className={tab === t ? 'active' : ''}
@@ -384,59 +528,6 @@ export default function CampaignDetail() {
         ))}
       </div>
 
-      {/* Overview Tab */}
-      {tab === 'overview' && (
-        <div className="flex-column gap-16">
-          <div className="card">
-            <h3 style={{ marginBottom: 16 }}>Campaign Summary</h3>
-            <div className="form-group">
-              <label className="text-muted">Campaign Name</label>
-              <p style={{ fontSize: '1.125rem', fontWeight: 600 }}>{campaign.name}</p>
-            </div>
-            <div className="form-group">
-              <label className="text-muted">Product</label>
-              <p>{campaign.product?.name ?? 'No product'}</p>
-            </div>
-            <div className="form-group">
-              <label className="text-muted">Goal</label>
-              <p>{campaign.goal?.replace(/_/g, ' ') || 'No goal set'}</p>
-            </div>
-            <div className="form-group">
-              <label className="text-muted">Status</label>
-              <span className={`badge badge-${campaign.status}`}>{campaign.status}</span>
-            </div>
-          </div>
-
-          {analysis && (
-            <div className="card">
-              <h3 style={{ marginBottom: 12 }}>AI Analysis Preview</h3>
-              <p style={{ fontSize: '0.875rem', lineHeight: 1.6 }}>
-                {analysis.summary}
-              </p>
-              <div className="text-muted" style={{ fontSize: '0.75rem', marginTop: 8 }}>
-                Last analyzed: {new Date(analysis.analyzed_at).toLocaleString()}
-              </div>
-            </div>
-          )}
-
-          <div className="card">
-            <h3 style={{ marginBottom: 16 }}>Timeline</h3>
-            <div className="flex-gap" style={{ gap: 24 }}>
-              <div className="form-group">
-                <label className="text-muted">Start Date</label>
-                <p>{campaign.start_date ? new
-                  new Date(campaign.start_date).toLocaleDateString() : 'Not set'}</p>
-              </div>
-              <div className="form-group">
-                <label className="text-muted">End Date</label>
-                <p>{campaign.end_date ? new
-                  Date(campaign.end_date).toLocaleDateString() : 'Not set'}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Posts Tab */}
       {tab === 'posts' && (
         <div>
@@ -445,13 +536,66 @@ export default function CampaignDetail() {
               {campaign.posts?.length ?? 0} post
               {(campaign.posts?.length ?? 0) !== 1 ? 's' : ''}
             </span>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={() => setShowAddPost(true)}
-            >
-              <Plus size={14} /> Add Post
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => setShowAddFeed(true)}
+                title="Auto-populate new posts from a connected account"
+              >
+                <Plus size={14} /> Add Feed
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => setShowAddPost(true)}
+              >
+                <Plus size={14} /> Add Post
+              </button>
+            </div>
           </div>
+
+          {feeds.length > 0 && (
+            <div className="card mb-16" style={{ padding: 12 }}>
+              <div className="text-muted" style={{ fontSize: '0.8rem', marginBottom: 8 }}>
+                Auto-feeds
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {feeds.map((f) => (
+                  <div key={f.id} className="flex-between" style={{ fontSize: '0.85rem' }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 600 }}>
+                        {PLATFORM_NAMES[f.platform] ?? f.platform}
+                      </span>
+                      <span>{f.account_handle}</span>
+                      <span className="text-muted">
+                        · {FEED_CONTENT_TYPES[f.platform]?.find(c => c.value === f.content_type)?.label ?? f.content_type}
+                      </span>
+                      {f.last_checked_at && (
+                        <span className="text-muted" style={{ fontSize: '0.75rem' }}>
+                          · checked {new Date(f.last_checked_at).toLocaleString()}
+                        </span>
+                      )}
+                      {f.last_error && (
+                        <span style={{ color: 'var(--danger)', fontSize: '0.75rem' }}>
+                          · {f.last_error}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        if (confirm(`Remove this ${f.platform} feed? Posts already discovered will remain.`)) {
+                          deleteFeed.mutate(f.id);
+                        }
+                      }}
+                      title="Remove feed"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {campaign.posts && campaign.posts.length > 0 ? (
             <div className="table-wrapper">
@@ -461,13 +605,15 @@ export default function CampaignDetail() {
                     <th style={{ width: 28 }} />
                     <th>Platform</th>
                     <th>Title / Preview</th>
-                    <th>Community</th>
-                    <th>Posted</th>
-                    <th style={{ textAlign: 'right' }}>Engagement</th>
+                    <SortHeader label="Community" sortKey="community" />
+                    <SortHeader label="Posted" sortKey="posted_at" />
+                    <SortHeader label="Likes" sortKey="likes" align="right" />
+                    <SortHeader label="Comments" sortKey="comments" align="right" />
+                    <SortHeader label="Views" sortKey="views" align="right" />
                   </tr>
                 </thead>
                 <tbody>
-                  {campaign.posts.map((post) => (
+                  {sortedPosts.map((post) => (
                     <PostRow key={post.id} post={post} />
                   ))}
                 </tbody>
@@ -486,9 +632,102 @@ export default function CampaignDetail() {
             </div>
           )}
 
+          {/* Add Feed Modal */}
+          {showAddFeed && (
+            <div className="modal-overlay" onClick={() => setShowAddFeed(false)}>
+              <div className="modal" onClick={(e) => e.stopPropagation()}>
+                <div className="flex-between" style={{ marginBottom: 16 }}>
+                  <h3 style={{ margin: 0 }}>Add Auto-Feed</h3>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setShowAddFeed(false)}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <p className="text-muted" style={{ marginBottom: 16, fontSize: '0.85rem' }}>
+                  New posts on the chosen account will be auto-added to this campaign on each metric tick.
+                  Only posts created after the feed is set up will be pulled in.
+                </p>
+                {feedCapableAccounts.length === 0 ? (
+                  <div style={{ padding: 16, background: 'var(--bg-tertiary)', borderRadius: 'var(--radius-sm)' }}>
+                    <p style={{ marginTop: 0, fontSize: '0.9rem' }}>
+                      No feed-capable accounts connected to this profile yet.
+                    </p>
+                    <Link to="/settings" className="btn btn-primary btn-sm">
+                      Go to Settings → Connect an account
+                    </Link>
+                  </div>
+                ) : (
+                  <form onSubmit={handleAddFeed}>
+                    <div className="form-group">
+                      <label>Connected account *</label>
+                      <select
+                        className="form-select"
+                        value={feedAccountId}
+                        onChange={(e) => {
+                          const newId = e.target.value;
+                          setFeedAccountId(newId);
+                          const platform = feedCapableAccounts.find(a => a.id === newId)?.platform;
+                          if (platform) {
+                            setFeedContentType(FEED_CONTENT_TYPES[platform]?.[0]?.value ?? '');
+                          }
+                        }}
+                        required
+                      >
+                        <option value="">Select an account...</option>
+                        {feedCapableAccounts.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {PLATFORM_NAMES[a.platform] ?? a.platform} · {a.account_handle}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {selectedAccount && (
+                      <div className="form-group">
+                        <label>Content type *</label>
+                        <select
+                          className="form-select"
+                          value={feedContentType}
+                          onChange={(e) => setFeedContentType(e.target.value)}
+                          required
+                        >
+                          {(FEED_CONTENT_TYPES[selectedAccount.platform] ?? []).map((c) => (
+                            <option key={c.value} value={c.value}>{c.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {createFeed.isError && (
+                      <p style={{ color: 'var(--danger)', fontSize: '0.825rem', marginBottom: 12 }}>
+                        {(createFeed.error as Error)?.message ?? 'Failed to add feed'}
+                      </p>
+                    )}
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <button
+                        type="submit"
+                        className="btn btn-primary"
+                        disabled={createFeed.isPending || !feedAccountId}
+                      >
+                        {createFeed.isPending ? 'Verifying...' : 'Add Feed'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => setShowAddFeed(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Add Post Modal */}
           {showAddPost && (
-            <div className="modal-overlay" onClick={handleOverlayClick}>
+            <div className="modal-overlay" onClick={() => setShowAddPost(false)}>
               <div className="modal" onClick={(e) => e.stopPropagation()}>
                 <div className="flex-between" style={{ marginBottom: 16 }}>
                   <h3 style={{ margin: 0 }}>Add Post</h3>
@@ -564,12 +803,13 @@ export default function CampaignDetail() {
                       />
                     </div>
                     <div className="form-group">
-                      <label>Posted Date</label>
+                      <label>Platform Post ID</label>
                       <input
                         className="form-input"
-                        type="date"
-                        value={postPostedAt}
-                        onChange={(e) => setPostPostedAt(e.target.value)}
+                        type="text"
+                        value={postPlatformId}
+                        onChange={(e) => setPostPlatformId(e.target.value)}
+                        placeholder="Optional"
                       />
                     </div>
                   </div>
@@ -658,7 +898,7 @@ export default function CampaignDetail() {
                     >
                       <CartesianGrid
                         strokeDasharray="3 3"
-                        stroke="vargan(--border-light)"
+                        stroke="var(--border-light)"
                       />
                       <XAxis
                         dataKey="name"
@@ -846,7 +1086,7 @@ export default function CampaignDetail() {
                   <div
                     style={{
                       display: 'flex',
-                      flexag: 'column',
+                      flexDirection: 'column',
                       gap: 8,
                     }}
                   >
@@ -860,1510 +1100,190 @@ export default function CampaignDetail() {
                             {pat.pattern}
                           </span>
                           <span
+                            className="confidence-badge"
                             style={{
-                              fontSize: '0.75rem',
-                              color: '#666',
+                              background:
+                                pat.confidence === 'high'
+                                  ? 'var(--success-bg)'
+                                  : pat.confidence === 'medium'
+                                    ? 'var(--warning-bg)'
+                                    : 'var(--bg-tertiary)',
+                              color:
+                                pat.confidence === 'high'
+                                  ? 'var(--success)'
+                                  : pat.confidence === 'medium'
+                                    ? 'var(--warning)'
+                                    : 'var(--text-tertiary)',
                             }}
                           >
                             {pat.confidence}
                           </span>
                         </div>
-                        <p className='text-sm text-gray-600'>{pat.description}</p>
+                        <p
+                          className="text-muted"
+                          style={{ margin: 0, fontSize: '0.825rem' }}
+                        >
+                          {pat.evidence}
+                        </p>
+                        {pat.actionable_insight && (
+                          <p
+                            style={{
+                              margin: '6px 0 0',
+                              fontSize: '0.825rem',
+                              color: 'var(--accent-primary)',
+                            }}
+                          >
+                            {pat.actionable_insight}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-              {/* Note: The above pattern rendering was a placeholder for the actual structure. 
-                  The real structure is based on the provided code snippet. */}
-              {/* Re-implementing the actual pattern rendering logic from the original code */}
-              {analysis.patterns && (
-                <div className="mt-4">
-                  {analysis.patterns.map((pattern, idx) => (
-                    <div key={idx} className="mb-2 p-3 bg-gray-50 rounded">
-                      <p className="font-semibold text-sm">{pattern.description}</p>
+
+              {analysis.recommendations &&
+                analysis.recommendations.length > 0 && (
+                  <div className="section">
+                    <h3 className="section-title">Recommendations</h3>
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 12,
+                      }}
+                    >
+                      {analysis.recommendations.map((rec, i) => (
+                        <AIRecommendation
+                          key={i}
+                          recommendation={rec}
+                        />
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                )}
+            </>
+          ) : (
+            <div className="empty-state">
+              <Brain size={48} style={{ opacity: 0.5 }} />
+              <h3>No AI analysis yet</h3>
+              <p>
+                Run an AI analysis from the dashboard to get insights about
+                this campaign.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Settings Tab */}
+      {tab === 'settings' && (
+        <div style={{ maxWidth: 520 }}>
+          <div className="card mb-24">
+            <h3
+              style={{
+                fontSize: '0.95rem',
+                fontWeight: 600,
+                marginBottom: 16,
+              }}
+            >
+              Campaign Settings
+            </h3>
+            <div className="form-group">
+              <label>Campaign Name</label>
+              <input
+                className="form-input"
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label>Goal</label>
+              <select
+                className="form-select"
+                value={editGoal}
+                onChange={(e) => setEditGoal(e.target.value)}
+              >
+                <option value="">No goal set</option>
+                <option value="drive_sales">Drive Sales</option>
+                <option value="awareness">Brand Awareness</option>
+                <option value="traffic">Drive Traffic</option>
+                <option value="community_growth">
+                  Community Growth
+                </option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Target Audience</label>
+              <input
+                className="form-input"
+                type="text"
+                value={editAudience}
+                onChange={(e) => setEditAudience(e.target.value)}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                className="btn btn-primary"
+                onClick={handleSaveSettings}
+                disabled={updateCampaign.isPending}
+              >
+                {updateCampaign.isPending ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3
+              style={{
+                fontSize: '0.95rem',
+                fontWeight: 600,
+                marginBottom: 12,
+                color: 'var(--danger)',
+              }}
+            >
+              Danger Zone
+            </h3>
+            <p className="text-muted" style={{ marginBottom: 12 }}>
+              Archiving hides the campaign from the dashboard and stops
+              metric collection. Deleting permanently removes it and all
+              its posts, metrics, and analyses.
+            </p>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button className="btn btn-danger" onClick={handleArchive}>
+                Archive Campaign
+              </button>
+              {confirmPermanentDelete ? (
+                <>
+                  <button
+                    className="btn btn-danger"
+                    style={{ background: '#991b1b' }}
+                    onClick={handlePermanentDelete}
+                    disabled={deleteCampaign.isPending}
+                  >
+                    {deleteCampaign.isPending ? 'Deleting...' : 'Confirm Delete Forever'}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setConfirmPermanentDelete(false)}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn btn-ghost"
+                  style={{ color: 'var(--danger)' }}
+                  onClick={() => setConfirmPermanentDelete(true)}
+                >
+                  Delete Permanently
+                </button>
               )}
-            {/* End of pattern rendering */}
-            {/* Note: The above pattern rendering was a placeholder for the actual structure. 
-                The real structure is based on the provided code snippet. */}
-            {/* Re-implementing the actual pattern rendering logic from the original code */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {
-                  analysis.patterns.map((pattern, idx) => (
-                    <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                    ">
-                      <p className="font-semibold text-sm">{pattern.description}</p>
-                    </div>
-                  ))
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {
-                  analysis.patterns.map((pattern, idx) => (
-                    <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                    ">
-                      <p className="font-semibold text-sm">{pattern.description}</p>
-                    </div>
-                  ))
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {analysis.patterns && (
-              <div className="mt-4">
-                {
-                  analysis.patterns.map((pattern, idx) => (
-                    <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                    ">
-                      <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-              analysis.patterns && (
-                <div className="mt-4">
-                  {
-                    analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  }
-                </div>
-              )
-            }
-            {/* End of pattern rendering */}
-            {
-              analysis.patterns && (
-                <div className="mt-4">
-                  {
-                    analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  }
-                </div>
-              )
-            }
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="mt-4">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                          <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                          ">
-                            <p className="font-semibold text-sm">{pattern.description}</p>
-                          </div>
-                        )
-                      }
-                    </div>
-                  )
-            }
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="mt-4">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="mt-4">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p-
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                      ">
-                        <p className="font-semibold text-sm">{pattern.description}</p>
-                      </div>
-                    )
-                  )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-                </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{p-</p>
-                      </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p-3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-                </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-                </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-                </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-                </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-                </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <div className="                mt-4
-                  ">
-                      {
-                        analysis.patterns.map((pattern, idx) => (
-                  <div key={idx} className="mb-2 p3 bg-gray-50 rounded
-                  ">
-                    <p className="font-semibold text-sm">{pattern.description}</p>
-                  </div>
-                )
-                }
-              </div>
-            )}
-            {/* End of pattern rendering */}
-            {
-                  analysis.patterns && (
-                    <
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

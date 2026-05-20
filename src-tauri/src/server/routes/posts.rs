@@ -218,8 +218,16 @@ async fn delete_post(
         return Err(AppError::NotFound("Post not found".into()));
     }
 
+    // metric_snapshots + analysis_metric_snapshots reference posts.id without CASCADE,
+    // so we delete dependents manually inside a transaction.
+    let mut tx = state.db.begin().await?;
+    sqlx::query("DELETE FROM metric_snapshots WHERE post_id = ?")
+        .bind(&post_id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM analysis_metric_snapshots WHERE post_id = ?")
+        .bind(&post_id).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM posts WHERE id = ?")
-        .bind(&post_id).execute(&state.db).await?;
+        .bind(&post_id).execute(&mut *tx).await?;
+    tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -223,16 +223,24 @@ export default function PostRow({ post }: PostRowProps) {
           {post.posted_at ? new Date(post.posted_at).toLocaleDateString() : 'Not posted'}
         </td>
         <td style={{ textAlign: 'right' }}>
-          {latestMetric ? (
-            <span>{latestMetric.views.toLocaleString()} views</span>
-          ) : (
-            <span className="text-muted">--</span>
-          )}
+          {(latestMetric?.likes ?? post.likes) != null
+            ? (latestMetric?.likes ?? post.likes ?? 0).toLocaleString()
+            : <span className="text-muted">--</span>}
+        </td>
+        <td style={{ textAlign: 'right' }}>
+          {(latestMetric?.comments ?? post.comments) != null
+            ? (latestMetric?.comments ?? post.comments ?? 0).toLocaleString()
+            : <span className="text-muted">--</span>}
+        </td>
+        <td style={{ textAlign: 'right' }}>
+          {(latestMetric?.views ?? post.views) != null
+            ? (latestMetric?.views ?? post.views ?? 0).toLocaleString()
+            : <span className="text-muted">--</span>}
         </td>
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={6} style={{ padding: '12px 16px', background: 'var(--bg-secondary)' }}>
+          <td colSpan={8} style={{ padding: '12px 16px', background: 'var(--bg-secondary)' }}>
             {/* Post edit form */}
             {editingPost && postForm ? (
               <form

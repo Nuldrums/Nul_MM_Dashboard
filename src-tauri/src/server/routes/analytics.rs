@@ -43,42 +43,92 @@ async fn overview(
         sqlx::query_as("SELECT COUNT(*) FROM products").fetch_one(&state.db).await?
     };
 
+    // Sum only the latest snapshot per post — snapshots are cumulative point-in-time totals,
+    // so summing across dates would double-count.
     let metrics: (i64, i64, i64, i64) = if let Some(ref pid) = params.profile_id {
         sqlx::query_as(
-            "SELECT COALESCE(SUM(ms.views),0), COALESCE(SUM(ms.likes),0),
-                    COALESCE(SUM(ms.comments),0), COALESCE(SUM(ms.shares),0)
-             FROM metric_snapshots ms
-             JOIN posts p ON ms.post_id = p.id
+            "SELECT COALESCE(SUM(latest.views),0), COALESCE(SUM(latest.likes),0),
+                    COALESCE(SUM(latest.comments),0), COALESCE(SUM(latest.shares),0)
+             FROM posts p
              JOIN campaigns c ON p.campaign_id = c.id
+             JOIN (
+                 SELECT post_id, views, likes, comments, shares,
+                        ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+                 FROM metric_snapshots
+             ) latest ON latest.post_id = p.id AND latest.rn = 1
              WHERE c.profile_id = ?"
         ).bind(pid).fetch_one(&state.db).await?
     } else {
         sqlx::query_as(
-            "SELECT COALESCE(SUM(views),0), COALESCE(SUM(likes),0),
-                    COALESCE(SUM(comments),0), COALESCE(SUM(shares),0)
-             FROM metric_snapshots"
+            "SELECT COALESCE(SUM(latest.views),0), COALESCE(SUM(latest.likes),0),
+                    COALESCE(SUM(latest.comments),0), COALESCE(SUM(latest.shares),0)
+             FROM (
+                 SELECT post_id, views, likes, comments, shares,
+                        ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+                 FROM metric_snapshots
+             ) latest WHERE latest.rn = 1"
         ).fetch_one(&state.db).await?
     };
 
-    // Top 5 posts by likes
+    // Top 5 posts by likes — use latest snapshot per post
     let top_posts: Vec<(String, Option<String>, String, i64)> = if let Some(ref pid) = params.profile_id {
         sqlx::query_as(
-            "SELECT p.id, p.title, p.platform, COALESCE(SUM(ms.likes),0) as total_likes
-             FROM posts p LEFT JOIN metric_snapshots ms ON ms.post_id = p.id
-             JOIN campaigns c ON p.campaign_id = c.id WHERE c.profile_id = ?
-             GROUP BY p.id ORDER BY total_likes DESC LIMIT 5"
+            "SELECT p.id, p.title, p.platform, COALESCE(latest.likes, 0) as total_likes
+             FROM posts p
+             JOIN campaigns c ON p.campaign_id = c.id
+             LEFT JOIN (
+                 SELECT post_id, likes,
+                        ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+                 FROM metric_snapshots
+             ) latest ON latest.post_id = p.id AND latest.rn = 1
+             WHERE c.profile_id = ?
+             ORDER BY total_likes DESC LIMIT 5"
         ).bind(pid).fetch_all(&state.db).await?
     } else {
         sqlx::query_as(
-            "SELECT p.id, p.title, p.platform, COALESCE(SUM(ms.likes),0) as total_likes
-             FROM posts p LEFT JOIN metric_snapshots ms ON ms.post_id = p.id
-             GROUP BY p.id ORDER BY total_likes DESC LIMIT 5"
+            "SELECT p.id, p.title, p.platform, COALESCE(latest.likes, 0) as total_likes
+             FROM posts p
+             LEFT JOIN (
+                 SELECT post_id, likes,
+                        ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+                 FROM metric_snapshots
+             ) latest ON latest.post_id = p.id AND latest.rn = 1
+             ORDER BY total_likes DESC LIMIT 5"
         ).fetch_all(&state.db).await?
     };
 
     let top_posts_json: Vec<serde_json::Value> = top_posts.into_iter().map(|(id, title, platform, likes)| {
         serde_json::json!({"id": id, "title": title, "platform": platform, "total_likes": likes})
     }).collect();
+
+    let total_engagement = metrics.1 + metrics.2 + metrics.3; // likes + comments + shares
+    let avg_engagement = if post_count > 0 {
+        total_engagement as f64 / post_count as f64
+    } else {
+        0.0
+    };
+
+    // Average AI score across most recent analysis per campaign (NULL if no analyses yet)
+    let avg_score_row: Option<(Option<f64>,)> = if let Some(ref pid) = params.profile_id {
+        sqlx::query_as(
+            "SELECT AVG(score) FROM (
+                 SELECT json_extract(top_performers, '$[0].score') AS score
+                 FROM ai_analyses a
+                 JOIN campaigns c ON a.campaign_id = c.id
+                 WHERE c.profile_id = ?
+                   AND a.id IN (SELECT id FROM ai_analyses a2 WHERE a2.campaign_id = a.campaign_id ORDER BY analyzed_at DESC LIMIT 1)
+             )"
+        ).bind(pid).fetch_optional(&state.db).await?
+    } else {
+        sqlx::query_as(
+            "SELECT AVG(score) FROM (
+                 SELECT json_extract(top_performers, '$[0].score') AS score
+                 FROM ai_analyses a
+                 WHERE a.id IN (SELECT id FROM ai_analyses a2 WHERE a2.campaign_id = a.campaign_id ORDER BY analyzed_at DESC LIMIT 1)
+             )"
+        ).fetch_optional(&state.db).await?
+    };
+    let avg_ai_score = avg_score_row.and_then(|r| r.0).unwrap_or(0.0);
 
     Ok(Json(serde_json::json!({
         "active_campaigns": campaign_count,
@@ -88,6 +138,8 @@ async fn overview(
         "total_likes": metrics.1,
         "total_comments": metrics.2,
         "total_shares": metrics.3,
+        "avg_engagement": avg_engagement,
+        "avg_ai_score": avg_ai_score,
         "top_posts": top_posts_json,
     })))
 }
@@ -96,19 +148,30 @@ async fn platforms(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ProfileIdFilter>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    // Use latest snapshot per post — snapshots are cumulative point-in-time totals
     let rows: Vec<(String, i64, i64, i64, i64, i64)> = if let Some(ref pid) = params.profile_id {
         sqlx::query_as(
-            "SELECT p.platform, COUNT(DISTINCT p.id), COALESCE(SUM(ms.views),0),
-                    COALESCE(SUM(ms.likes),0), COALESCE(SUM(ms.comments),0), COALESCE(SUM(ms.shares),0)
-             FROM posts p LEFT JOIN metric_snapshots ms ON ms.post_id = p.id
+            "SELECT p.platform, COUNT(DISTINCT p.id), COALESCE(SUM(latest.views),0),
+                    COALESCE(SUM(latest.likes),0), COALESCE(SUM(latest.comments),0), COALESCE(SUM(latest.shares),0)
+             FROM posts p
+             LEFT JOIN (
+                 SELECT post_id, views, likes, comments, shares,
+                        ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+                 FROM metric_snapshots
+             ) latest ON latest.post_id = p.id AND latest.rn = 1
              JOIN campaigns c ON p.campaign_id = c.id WHERE c.profile_id = ?
              GROUP BY p.platform ORDER BY COUNT(DISTINCT p.id) DESC"
         ).bind(pid).fetch_all(&state.db).await?
     } else {
         sqlx::query_as(
-            "SELECT p.platform, COUNT(DISTINCT p.id), COALESCE(SUM(ms.views),0),
-                    COALESCE(SUM(ms.likes),0), COALESCE(SUM(ms.comments),0), COALESCE(SUM(ms.shares),0)
-             FROM posts p LEFT JOIN metric_snapshots ms ON ms.post_id = p.id
+            "SELECT p.platform, COUNT(DISTINCT p.id), COALESCE(SUM(latest.views),0),
+                    COALESCE(SUM(latest.likes),0), COALESCE(SUM(latest.comments),0), COALESCE(SUM(latest.shares),0)
+             FROM posts p
+             LEFT JOIN (
+                 SELECT post_id, views, likes, comments, shares,
+                        ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+                 FROM metric_snapshots
+             ) latest ON latest.post_id = p.id AND latest.rn = 1
              GROUP BY p.platform ORDER BY COUNT(DISTINCT p.id) DESC"
         ).fetch_all(&state.db).await?
     };
@@ -127,19 +190,30 @@ async fn post_types(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ProfileIdFilter>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    // Use latest snapshot per post — snapshots are cumulative point-in-time totals
     let rows: Vec<(String, i64, i64, i64, i64, i64)> = if let Some(ref pid) = params.profile_id {
         sqlx::query_as(
-            "SELECT p.post_type, COUNT(DISTINCT p.id), COALESCE(SUM(ms.views),0),
-                    COALESCE(SUM(ms.likes),0), COALESCE(SUM(ms.comments),0), COALESCE(SUM(ms.shares),0)
-             FROM posts p LEFT JOIN metric_snapshots ms ON ms.post_id = p.id
+            "SELECT p.post_type, COUNT(DISTINCT p.id), COALESCE(SUM(latest.views),0),
+                    COALESCE(SUM(latest.likes),0), COALESCE(SUM(latest.comments),0), COALESCE(SUM(latest.shares),0)
+             FROM posts p
+             LEFT JOIN (
+                 SELECT post_id, views, likes, comments, shares,
+                        ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+                 FROM metric_snapshots
+             ) latest ON latest.post_id = p.id AND latest.rn = 1
              JOIN campaigns c ON p.campaign_id = c.id WHERE c.profile_id = ?
              GROUP BY p.post_type ORDER BY COUNT(DISTINCT p.id) DESC"
         ).bind(pid).fetch_all(&state.db).await?
     } else {
         sqlx::query_as(
-            "SELECT p.post_type, COUNT(DISTINCT p.id), COALESCE(SUM(ms.views),0),
-                    COALESCE(SUM(ms.likes),0), COALESCE(SUM(ms.comments),0), COALESCE(SUM(ms.shares),0)
-             FROM posts p LEFT JOIN metric_snapshots ms ON ms.post_id = p.id
+            "SELECT p.post_type, COUNT(DISTINCT p.id), COALESCE(SUM(latest.views),0),
+                    COALESCE(SUM(latest.likes),0), COALESCE(SUM(latest.comments),0), COALESCE(SUM(latest.shares),0)
+             FROM posts p
+             LEFT JOIN (
+                 SELECT post_id, views, likes, comments, shares,
+                        ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+                 FROM metric_snapshots
+             ) latest ON latest.post_id = p.id AND latest.rn = 1
              GROUP BY p.post_type ORDER BY COUNT(DISTINCT p.id) DESC"
         ).fetch_all(&state.db).await?
     };

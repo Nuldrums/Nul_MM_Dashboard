@@ -20,6 +20,7 @@ export interface Product {
 export interface Campaign {
   id: string;
   product_id: string;
+  profile_id?: string;
   name: string;
   status: "active" | "paused" | "completed" | "archived";
   goal?: string;
@@ -34,6 +35,11 @@ export interface Campaign {
   posts?: Post[];
   latest_analysis?: AIAnalysis;
   metrics_summary?: MetricsSummary;
+  post_count?: number;
+  total_likes?: number;
+  total_comments?: number;
+  total_views?: number;
+  platforms?: string[];
 }
 
 export interface Post {
@@ -50,6 +56,11 @@ export interface Post {
   tags: string[];
   is_api_tracked: boolean;
   created_at: string;
+  views?: number;
+  likes?: number;
+  comments?: number;
+  shares?: number;
+  engagement?: number;
 }
 
 export interface MetricSnapshot {
@@ -110,3 +121,32 @@ export interface SystemStatus {
 
 export type Platform = "reddit" | "x" | "youtube" | "discord" | "tiktok" | "instagram" | "linkedin" | "other";
 export type PostType = "text" | "image" | "video_short" | "video_long" | "thread" | "comment" | "link" | "self_promo";
+
+export interface CampaignFeed {
+  id: string;
+  campaign_id: string;
+  profile_account_id: string;
+  platform: string;
+  account_handle: string;
+  account_id?: string;
+  follower_count?: number;
+  follower_count_at?: string;
+  content_type: string;
+  last_seen_post_id?: string;
+  last_checked_at?: string;
+  last_error?: string;
+  is_active: number;
+  created_at?: string;
+}
+
+export interface ProfileAccount {
+  id: string;
+  profile_id: string;
+  platform: string;
+  account_handle: string;
+  account_id?: string;
+  is_active: number;
+  has_oauth: number;
+  token_expires_at?: string;
+  created_at?: string;
+}

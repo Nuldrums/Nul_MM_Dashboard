@@ -2,6 +2,9 @@ pub mod profiles;
 pub mod products;
 pub mod campaigns;
 pub mod posts;
+pub mod feeds;
+pub mod accounts;
+pub mod oauth;
 pub mod metrics;
 pub mod analytics;
 pub mod ai_analysis;
@@ -20,6 +23,9 @@ pub fn build_routes() -> Router<Arc<AppState>> {
         .merge(products::routes())
         .merge(campaigns::routes())
         .merge(posts::routes())
+        .merge(feeds::routes())
+        .merge(accounts::routes())
+        .merge(oauth::routes())
         .merge(metrics::routes())
         .merge(analytics::routes())
         .merge(ai_analysis::routes())

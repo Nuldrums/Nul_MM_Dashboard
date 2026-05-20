@@ -62,10 +62,18 @@ pub struct CampaignResponse {
     pub total_likes: i64,
     pub total_comments: i64,
     pub total_views: i64,
+    pub platforms: Vec<String>,
 }
 
 impl CampaignResponse {
-    fn from_row(r: CampaignRow, post_count: i64, total_likes: i64, total_comments: i64, total_views: i64) -> Self {
+    fn from_row(
+        r: CampaignRow,
+        post_count: i64,
+        total_likes: i64,
+        total_comments: i64,
+        total_views: i64,
+        platforms: Vec<String>,
+    ) -> Self {
         Self {
             id: r.id,
             product_id: r.product_id,
@@ -84,6 +92,7 @@ impl CampaignResponse {
             total_likes,
             total_comments,
             total_views,
+            platforms,
         }
     }
 }
@@ -125,12 +134,24 @@ async fn list_campaigns(
             "SELECT COUNT(*) FROM posts WHERE campaign_id = ?"
         ).bind(&cid).fetch_one(&state.db).await?;
 
+        // Sum the latest snapshot per post (snapshots are cumulative point-in-time totals)
         let metrics: (i64, i64, i64) = sqlx::query_as(
-            "SELECT COALESCE(SUM(ms.likes), 0), COALESCE(SUM(ms.comments), 0), COALESCE(SUM(ms.views), 0)
-             FROM metric_snapshots ms JOIN posts p ON ms.post_id = p.id WHERE p.campaign_id = ?"
+            "SELECT COALESCE(SUM(latest.likes), 0), COALESCE(SUM(latest.comments), 0), COALESCE(SUM(latest.views), 0)
+             FROM posts p
+             JOIN (
+                 SELECT post_id, views, likes, comments,
+                        ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+                 FROM metric_snapshots
+             ) latest ON latest.post_id = p.id AND latest.rn = 1
+             WHERE p.campaign_id = ?"
         ).bind(&cid).fetch_one(&state.db).await?;
 
-        response.push(CampaignResponse::from_row(campaign, post_count, metrics.0, metrics.1, metrics.2));
+        let platform_rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT platform FROM posts WHERE campaign_id = ?"
+        ).bind(&cid).fetch_all(&state.db).await?;
+        let platforms = platform_rows.into_iter().map(|(p,)| p).collect();
+
+        response.push(CampaignResponse::from_row(campaign, post_count, metrics.0, metrics.1, metrics.2, platforms));
     }
 
     Ok(Json(response))
@@ -141,20 +162,33 @@ async fn get_campaign(
     Path(campaign_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let campaign = sqlx::query_as::<_, CampaignRow>(
-        "SELECT id, product_id, profile_id, name, status, goal, target_audience,
+        "SELECT id, product_id, profile_id, name, status, goal, target_audience, tags,
                 start_date, end_date, notes, created_at, updated_at
          FROM campaigns WHERE id = ?"
     ).bind(&campaign_id).fetch_optional(&state.db).await?;
 
     let campaign = campaign.ok_or_else(|| AppError::NotFound("Campaign not found".into()))?;
 
-    // Fetch posts
-    let posts: Vec<(String, String, String, Option<String>, Option<String>, Option<String>, Option<String>, i32, Option<String>)> = sqlx::query_as(
-        "SELECT id, platform, post_type, title, url, target_community, posted_at, is_api_tracked, created_at
-         FROM posts WHERE campaign_id = ? ORDER BY created_at DESC"
+    // Fetch posts with their latest snapshot's metrics (snapshots are cumulative totals,
+    // so summing across dates would double-count). Falls back to 0 when no snapshot exists.
+    let posts: Vec<(String, String, String, Option<String>, Option<String>, Option<String>, Option<String>, i32, Option<String>, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT p.id, p.platform, p.post_type, p.title, p.url, p.target_community, p.posted_at, p.is_api_tracked, p.created_at,
+                COALESCE(latest.views, 0)    AS views,
+                COALESCE(latest.likes, 0)    AS likes,
+                COALESCE(latest.comments, 0) AS comments,
+                COALESCE(latest.shares, 0)   AS shares
+         FROM posts p
+         LEFT JOIN (
+             SELECT post_id, views, likes, comments, shares,
+                    ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+             FROM metric_snapshots
+         ) latest ON latest.post_id = p.id AND latest.rn = 1
+         WHERE p.campaign_id = ?
+         ORDER BY p.created_at DESC"
     ).bind(&campaign_id).fetch_all(&state.db).await?;
 
     let posts_data: Vec<serde_json::Value> = posts.into_iter().map(|p| {
+        let views = p.9; let likes = p.10; let comments = p.11; let shares = p.12;
         serde_json::json!({
             "id": p.0,
             "platform": p.1,
@@ -165,6 +199,11 @@ async fn get_campaign(
             "posted_at": p.6,
             "is_api_tracked": p.7,
             "created_at": p.8,
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+            "shares": shares,
+            "engagement": likes + comments + shares,
         })
     }).collect();
 
@@ -208,12 +247,12 @@ async fn create_campaign(
         .execute(&state.db).await?;
 
     let row = sqlx::query_as::<_, CampaignRow>(
-        "SELECT id, product_id, profile_id, name, status, goal, target_audience,
+        "SELECT id, product_id, profile_id, name, status, goal, target_audience, tags,
                 start_date, end_date, notes, created_at, updated_at
          FROM campaigns WHERE id = ?"
     ).bind(&id).fetch_one(&state.db).await?;
 
-    Ok((StatusCode::CREATED, Json(CampaignResponse::from_row(row, 0, 0, 0, 0))))
+    Ok((StatusCode::CREATED, Json(CampaignResponse::from_row(row, 0, 0, 0, 0, Vec::new()))))
 }
 
 async fn update_campaign(
@@ -222,7 +261,7 @@ async fn update_campaign(
     Json(data): Json<CampaignUpdate>,
 ) -> Result<Json<CampaignResponse>, AppError> {
     let existing = sqlx::query_as::<_, CampaignRow>(
-        "SELECT id, product_id, profile_id, name, status, goal, target_audience,
+        "SELECT id, product_id, profile_id, name, status, goal, target_audience, tags,
                 start_date, end_date, notes, created_at, updated_at
          FROM campaigns WHERE id = ?"
     ).bind(&campaign_id).fetch_optional(&state.db).await?;
@@ -250,12 +289,12 @@ async fn update_campaign(
         .execute(&state.db).await?;
 
     let updated = sqlx::query_as::<_, CampaignRow>(
-        "SELECT id, product_id, profile_id, name, status, goal, target_audience,
+        "SELECT id, product_id, profile_id, name, status, goal, target_audience, tags,
                 start_date, end_date, notes, created_at, updated_at
          FROM campaigns WHERE id = ?"
     ).bind(&campaign_id).fetch_one(&state.db).await?;
 
-    Ok(Json(CampaignResponse::from_row(updated, 0, 0, 0, 0)))
+    Ok(Json(CampaignResponse::from_row(updated, 0, 0, 0, 0, Vec::new())))
 }
 
 async fn delete_campaign(

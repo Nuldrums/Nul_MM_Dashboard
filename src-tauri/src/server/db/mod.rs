@@ -80,6 +80,7 @@ async fn create_tables(pool: &SqlitePool) -> anyhow::Result<()> {
             posted_at DATETIME,
             tags TEXT,
             is_api_tracked INTEGER DEFAULT 0,
+            profile_account_id TEXT REFERENCES profile_accounts(id) ON DELETE SET NULL,
             created_at DATETIME DEFAULT (datetime('now'))
         )"
     ).execute(pool).await?;
@@ -173,6 +174,53 @@ async fn create_tables(pool: &SqlitePool) -> anyhow::Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_kv_campaign_id ON knowledge_vectors(campaign_id)"
     ).execute(pool).await?;
 
+    // Per-profile social account connections (YouTube channel handle, X user, TikTok login).
+    // App-level credentials (API keys) live in platform_configs; user-level state lives here.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS profile_accounts (
+            id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+            platform TEXT NOT NULL,
+            account_handle TEXT NOT NULL,
+            account_id TEXT,
+            oauth_access_token TEXT,
+            oauth_refresh_token TEXT,
+            token_expires_at DATETIME,
+            follower_count INTEGER,
+            follower_count_at DATETIME,
+            is_active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT (datetime('now')),
+            UNIQUE(profile_id, platform, account_handle)
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_profile_accounts_profile ON profile_accounts(profile_id)"
+    ).execute(pool).await?;
+
+    // Auto-feed configs: a feed pulls new posts from a connected account on each metric tick
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS campaign_feeds (
+            id TEXT PRIMARY KEY,
+            campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+            profile_account_id TEXT NOT NULL REFERENCES profile_accounts(id) ON DELETE CASCADE,
+            content_type TEXT NOT NULL,
+            last_seen_post_id TEXT,
+            last_seen_posted_at DATETIME,
+            last_checked_at DATETIME,
+            last_error TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT (datetime('now'))
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_campaign_feeds_campaign ON campaign_feeds(campaign_id)"
+    ).execute(pool).await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_campaign_feeds_profile_account ON campaign_feeds(profile_account_id)"
+    ).execute(pool).await?;
+
     // Metric snapshots at time of analysis (for delta computation)
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS analysis_metric_snapshots (
@@ -202,7 +250,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         .and_then(|v| v.0.parse().ok())
         .unwrap_or(1);
 
-    const SCHEMA_VERSION: i32 = 4;
+    const SCHEMA_VERSION: i32 = 8;
 
     if current < SCHEMA_VERSION {
         tracing::info!("Running migrations: v{} -> v{}", current, SCHEMA_VERSION);
@@ -262,6 +310,173 @@ pub async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
             if !has_col {
                 sqlx::query("ALTER TABLE campaigns ADD COLUMN tags TEXT")
                     .execute(pool).await?;
+            }
+        }
+
+        if current < 5 {
+            tracing::info!("Applying migration v4 -> v5: campaign_feeds table (legacy inline shape)");
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS campaign_feeds (
+                    id TEXT PRIMARY KEY,
+                    campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+                    platform TEXT NOT NULL,
+                    account_handle TEXT NOT NULL,
+                    account_id TEXT,
+                    content_type TEXT NOT NULL,
+                    last_seen_post_id TEXT,
+                    last_seen_posted_at DATETIME,
+                    last_checked_at DATETIME,
+                    last_error TEXT,
+                    is_active INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT (datetime('now'))
+                )"
+            ).execute(pool).await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_campaign_feeds_campaign ON campaign_feeds(campaign_id)"
+            ).execute(pool).await?;
+        }
+
+        if current < 6 {
+            tracing::info!("Applying migration v5 -> v6: profile_accounts + campaign_feeds refactor");
+
+            // 1. Create profile_accounts table
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS profile_accounts (
+                    id TEXT PRIMARY KEY,
+                    profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+                    platform TEXT NOT NULL,
+                    account_handle TEXT NOT NULL,
+                    account_id TEXT,
+                    oauth_access_token TEXT,
+                    oauth_refresh_token TEXT,
+                    token_expires_at DATETIME,
+                    is_active INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT (datetime('now')),
+                    UNIQUE(profile_id, platform, account_handle)
+                )"
+            ).execute(pool).await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_profile_accounts_profile ON profile_accounts(profile_id)"
+            ).execute(pool).await?;
+
+            // 2. Backfill profile_accounts from any existing campaign_feeds rows (v5 legacy shape).
+            // Skip if the legacy `account_id` column isn't present (fresh install on v6+ schema).
+            let has_legacy_col: bool = sqlx::query_scalar::<_, i32>(
+                "SELECT COUNT(*) FROM pragma_table_info('campaign_feeds') WHERE name='account_id'"
+            ).fetch_one(pool).await? > 0;
+
+            let legacy_feeds: Vec<(String, String, String, String, Option<String>)> = if has_legacy_col {
+                sqlx::query_as(
+                    "SELECT cf.id, cf.campaign_id, cf.platform, cf.account_handle, cf.account_id
+                     FROM campaign_feeds cf"
+                ).fetch_all(pool).await.unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            // Need a profile_id for each backfilled account. Use the feed's campaign's profile_id.
+            // If null, create a placeholder profile to attach to (rare case but safe).
+            for (feed_id, campaign_id, platform, handle, account_id) in &legacy_feeds {
+                let profile_id: Option<(Option<String>,)> = sqlx::query_as(
+                    "SELECT profile_id FROM campaigns WHERE id = ?"
+                ).bind(campaign_id).fetch_optional(pool).await?;
+
+                let resolved_profile_id = match profile_id.and_then(|p| p.0) {
+                    Some(pid) => pid,
+                    None => {
+                        // Fall back to first profile, or create one
+                        let existing: Option<(String,)> = sqlx::query_as(
+                            "SELECT id FROM profiles LIMIT 1"
+                        ).fetch_optional(pool).await?;
+                        match existing {
+                            Some((pid,)) => pid,
+                            None => {
+                                let new_pid = uuid::Uuid::new_v4().to_string();
+                                sqlx::query("INSERT INTO profiles (id, name) VALUES (?, 'Default')")
+                                    .bind(&new_pid).execute(pool).await?;
+                                new_pid
+                            }
+                        }
+                    }
+                };
+
+                let account_uuid = uuid::Uuid::new_v4().to_string();
+                let _ = sqlx::query(
+                    "INSERT OR IGNORE INTO profile_accounts (id, profile_id, platform, account_handle, account_id)
+                     VALUES (?, ?, ?, ?, ?)"
+                ).bind(&account_uuid).bind(&resolved_profile_id).bind(platform).bind(handle).bind(account_id)
+                .execute(pool).await;
+
+                // Record mapping in temp column so we can finish the migration
+                let actual_id: (String,) = sqlx::query_as(
+                    "SELECT id FROM profile_accounts WHERE profile_id = ? AND platform = ? AND account_handle = ?"
+                ).bind(&resolved_profile_id).bind(platform).bind(handle).fetch_one(pool).await?;
+
+                // Stash the mapping by stuffing it into account_id temporarily (we drop the col below)
+                sqlx::query("UPDATE campaign_feeds SET account_id = ? WHERE id = ?")
+                    .bind(&actual_id.0).bind(feed_id).execute(pool).await?;
+            }
+
+            // 3. Rebuild campaign_feeds with the new shape only if the legacy shape is present.
+            if has_legacy_col {
+                sqlx::query("ALTER TABLE campaign_feeds RENAME TO campaign_feeds_old").execute(pool).await?;
+                sqlx::query(
+                    "CREATE TABLE campaign_feeds (
+                        id TEXT PRIMARY KEY,
+                        campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+                        profile_account_id TEXT NOT NULL REFERENCES profile_accounts(id) ON DELETE CASCADE,
+                        content_type TEXT NOT NULL,
+                        last_seen_post_id TEXT,
+                        last_seen_posted_at DATETIME,
+                        last_checked_at DATETIME,
+                        last_error TEXT,
+                        is_active INTEGER DEFAULT 1,
+                        created_at DATETIME DEFAULT (datetime('now'))
+                    )"
+                ).execute(pool).await?;
+                sqlx::query(
+                    "CREATE INDEX IF NOT EXISTS idx_campaign_feeds_campaign ON campaign_feeds(campaign_id)"
+                ).execute(pool).await?;
+                sqlx::query(
+                    "CREATE INDEX IF NOT EXISTS idx_campaign_feeds_profile_account ON campaign_feeds(profile_account_id)"
+                ).execute(pool).await?;
+
+                sqlx::query(
+                    "INSERT INTO campaign_feeds
+                     (id, campaign_id, profile_account_id, content_type,
+                      last_seen_post_id, last_seen_posted_at, last_checked_at, last_error, is_active, created_at)
+                     SELECT id, campaign_id, account_id, content_type,
+                            last_seen_post_id, last_seen_posted_at, last_checked_at, last_error, is_active, created_at
+                     FROM campaign_feeds_old"
+                ).execute(pool).await?;
+
+                sqlx::query("DROP TABLE campaign_feeds_old").execute(pool).await?;
+            }
+        }
+
+        if current < 7 {
+            tracing::info!("Applying migration v6 -> v7: posts.profile_account_id");
+            let has_col: bool = sqlx::query_scalar::<_, i32>(
+                "SELECT COUNT(*) FROM pragma_table_info('posts') WHERE name='profile_account_id'"
+            ).fetch_one(pool).await? > 0;
+            if !has_col {
+                sqlx::query(
+                    "ALTER TABLE posts ADD COLUMN profile_account_id TEXT REFERENCES profile_accounts(id) ON DELETE SET NULL"
+                ).execute(pool).await?;
+            }
+        }
+
+        if current < 8 {
+            tracing::info!("Applying migration v7 -> v8: profile_accounts.follower_count");
+            for col in &[("follower_count", "INTEGER"), ("follower_count_at", "DATETIME")] {
+                let has: bool = sqlx::query_scalar::<_, i32>(
+                    "SELECT COUNT(*) FROM pragma_table_info('profile_accounts') WHERE name=?"
+                ).bind(col.0).fetch_one(pool).await? > 0;
+                if !has {
+                    sqlx::query(&format!(
+                        "ALTER TABLE profile_accounts ADD COLUMN {} {}", col.0, col.1
+                    )).execute(pool).await?;
+                }
             }
         }
 
@@ -391,6 +606,6 @@ mod tests {
             "SELECT value FROM system_state WHERE key = 'schema_version'"
         ).fetch_one(&pool).await.unwrap();
 
-        assert_eq!(version.0, "4");
+        assert_eq!(version.0, "8");
     }
 }

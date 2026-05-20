@@ -69,6 +69,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/posts/{post_id}/metrics", get(get_post_metrics).post(add_manual_metric))
         .route("/api/metrics/{metric_id}", put(update_metric).delete(delete_metric))
         .route("/api/campaigns/{campaign_id}/metrics", get(get_campaign_metrics))
+        .route("/api/campaigns/{campaign_id}/metrics/timeline", get(campaign_metrics_timeline))
+        .route("/api/campaigns/{campaign_id}/metrics/platforms", get(campaign_metrics_platforms))
+        .route("/api/campaigns/{campaign_id}/metrics/post-types", get(campaign_metrics_post_types))
         .route("/api/metrics/fetch", post(trigger_fetch))
         .route("/api/metrics/fetch/status", get(fetch_status))
 }
@@ -105,15 +108,21 @@ async fn get_campaign_metrics(
         return Err(AppError::NotFound("Campaign not found".into()));
     }
 
+    // Sum the latest snapshot per post (snapshots are cumulative totals, not deltas)
     let metrics: (i64, i64, i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT COALESCE(SUM(ms.views),0), COALESCE(SUM(ms.impressions),0),
-                COALESCE(SUM(ms.likes),0), COALESCE(SUM(ms.dislikes),0),
-                COALESCE(SUM(ms.comments),0), COALESCE(SUM(ms.shares),0),
-                COALESCE(SUM(ms.saves),0), COALESCE(SUM(ms.clicks),0),
-                COUNT(ms.id)
-         FROM metric_snapshots ms JOIN posts p ON ms.post_id = p.id
+        "SELECT COALESCE(SUM(latest.views),0), COALESCE(SUM(latest.impressions),0),
+                COALESCE(SUM(latest.likes),0), COALESCE(SUM(latest.dislikes),0),
+                COALESCE(SUM(latest.comments),0), COALESCE(SUM(latest.shares),0),
+                COALESCE(SUM(latest.saves),0), COALESCE(SUM(latest.clicks),0),
+                (SELECT COUNT(*) FROM metric_snapshots ms2 JOIN posts p2 ON ms2.post_id = p2.id WHERE p2.campaign_id = ?)
+         FROM posts p
+         JOIN (
+             SELECT post_id, views, impressions, likes, dislikes, comments, shares, saves, clicks,
+                    ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+             FROM metric_snapshots
+         ) latest ON latest.post_id = p.id AND latest.rn = 1
          WHERE p.campaign_id = ?"
-    ).bind(&campaign_id).fetch_one(&state.db).await?;
+    ).bind(&campaign_id).bind(&campaign_id).fetch_one(&state.db).await?;
 
     let (post_count,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM posts WHERE campaign_id = ?"
@@ -132,6 +141,107 @@ async fn get_campaign_metrics(
         "snapshot_count": metrics.8,
         "post_count": post_count,
     })))
+}
+
+async fn campaign_metrics_timeline(
+    State(state): State<Arc<AppState>>,
+    Path(campaign_id): Path<String>,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    let rows: Vec<(String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT ms.snapshot_date,
+                COALESCE(SUM(ms.views), 0)    AS views,
+                COALESCE(SUM(ms.likes), 0)    AS likes,
+                COALESCE(SUM(ms.comments), 0) AS comments,
+                COALESCE(SUM(ms.shares), 0)   AS shares,
+                COUNT(DISTINCT ms.post_id)    AS posts
+         FROM metric_snapshots ms JOIN posts p ON ms.post_id = p.id
+         WHERE p.campaign_id = ?
+         GROUP BY ms.snapshot_date
+         ORDER BY ms.snapshot_date ASC"
+    ).bind(&campaign_id).fetch_all(&state.db).await?;
+
+    let result: Vec<serde_json::Value> = rows.into_iter().map(|(date, views, likes, comments, shares, posts)| {
+        serde_json::json!({
+            "date": date,
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+            "shares": shares,
+            "engagement": likes + comments + shares,
+            "posts": posts,
+        })
+    }).collect();
+
+    Ok(Json(result))
+}
+
+async fn campaign_metrics_platforms(
+    State(state): State<Arc<AppState>>,
+    Path(campaign_id): Path<String>,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    // Use latest snapshot per post — snapshots are cumulative point-in-time totals
+    let rows: Vec<(String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT p.platform,
+                COUNT(DISTINCT p.id)              AS post_count,
+                COALESCE(SUM(latest.views), 0)    AS views,
+                COALESCE(SUM(latest.likes), 0)    AS likes,
+                COALESCE(SUM(latest.comments), 0) AS comments,
+                COALESCE(SUM(latest.shares), 0)   AS shares
+         FROM posts p
+         LEFT JOIN (
+             SELECT post_id, views, likes, comments, shares,
+                    ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+             FROM metric_snapshots
+         ) latest ON latest.post_id = p.id AND latest.rn = 1
+         WHERE p.campaign_id = ?
+         GROUP BY p.platform
+         ORDER BY post_count DESC"
+    ).bind(&campaign_id).fetch_all(&state.db).await?;
+
+    let result: Vec<serde_json::Value> = rows.into_iter().map(|(platform, post_count, views, likes, comments, shares)| {
+        serde_json::json!({
+            "platform": platform,
+            "post_count": post_count,
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+            "shares": shares,
+            "engagement": likes + comments + shares,
+        })
+    }).collect();
+
+    Ok(Json(result))
+}
+
+async fn campaign_metrics_post_types(
+    State(state): State<Arc<AppState>>,
+    Path(campaign_id): Path<String>,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    // Use latest snapshot per post — snapshots are cumulative point-in-time totals
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT p.post_type,
+                COUNT(DISTINCT p.id) AS post_count,
+                COALESCE(SUM(latest.likes) + SUM(latest.comments) + SUM(latest.shares), 0) AS engagement
+         FROM posts p
+         LEFT JOIN (
+             SELECT post_id, likes, comments, shares,
+                    ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY snapshot_date DESC) AS rn
+             FROM metric_snapshots
+         ) latest ON latest.post_id = p.id AND latest.rn = 1
+         WHERE p.campaign_id = ?
+         GROUP BY p.post_type
+         ORDER BY engagement DESC"
+    ).bind(&campaign_id).fetch_all(&state.db).await?;
+
+    let result: Vec<serde_json::Value> = rows.into_iter().map(|(post_type, post_count, engagement)| {
+        serde_json::json!({
+            "post_type": post_type,
+            "post_count": post_count,
+            "engagement": engagement,
+        })
+    }).collect();
+
+    Ok(Json(result))
 }
 
 async fn trigger_fetch(

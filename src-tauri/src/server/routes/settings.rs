@@ -190,7 +190,7 @@ async fn platform_health(
          FROM platform_configs"
     ).fetch_all(&state.db).await?;
 
-    let mut health = serde_json::Map::new();
+    let mut platforms = Vec::new();
     for pc in rows {
         let creds: serde_json::Value = pc.credentials
             .as_deref()
@@ -201,15 +201,43 @@ async fn platform_health(
             .unwrap_or(false);
         let enabled = pc.is_enabled.unwrap_or(0) != 0;
 
-        health.insert(pc.platform, serde_json::json!({
-            "enabled": enabled,
-            "credentials_configured": has_creds,
+        platforms.push(serde_json::json!({
+            "platform": pc.platform,
+            "status": if has_creds && enabled { "connected" } else { "not_configured" },
             "last_fetched_at": pc.last_fetched_at.map(|dt| dt.to_string()),
-            "status": if has_creds && enabled { "ready" } else { "not_configured" },
         }));
     }
 
-    Ok(Json(serde_json::Value::Object(health)))
+    // AI status — connected if API key is set in DB or env, or CLI is available
+    let ai_key_row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT value FROM system_state WHERE key = 'ai_api_key'"
+    ).fetch_optional(&state.db).await?;
+    let ai_model_row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT value FROM system_state WHERE key = 'ai_model'"
+    ).fetch_optional(&state.db).await?;
+    let has_api_key = ai_key_row.and_then(|r| r.0).map(|s| !s.is_empty()).unwrap_or(false)
+        || !state.settings.anthropic_api_key.is_empty();
+    let cli_available = crate::server::ai::claude_cli::is_available();
+    let ai_status = if has_api_key || cli_available { "connected" } else { "not_configured" };
+    let ai_model = ai_model_row.and_then(|r| r.0).unwrap_or_default();
+
+    // Database info
+    let db_path = std::path::PathBuf::from(&state.settings.data_dir).join(
+        if std::path::PathBuf::from(&state.settings.data_dir).join("trikeri.db").exists() {
+            "trikeri.db"
+        } else {
+            "meem.db"
+        }
+    );
+    let db_size_mb = std::fs::metadata(&db_path)
+        .map(|m| m.len() as f64 / 1024.0 / 1024.0)
+        .unwrap_or(0.0);
+
+    Ok(Json(serde_json::json!({
+        "platforms": platforms,
+        "ai": { "status": ai_status, "model": ai_model },
+        "database": { "path": db_path.to_string_lossy(), "size_mb": db_size_mb },
+    })))
 }
 
 async fn startup_check(
