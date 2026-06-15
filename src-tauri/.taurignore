@@ -1,0 +1,4 @@
+# Runtime data written by the embedded backend at dev time.
+# Without this, `tauri dev`'s file watcher restarts the app in an
+# infinite loop every time the SQLite DB or log files are touched.
+backend/
