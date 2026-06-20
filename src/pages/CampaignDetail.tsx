@@ -182,6 +182,18 @@ export default function CampaignDetail() {
     return posts;
   }, [campaign?.posts, sortKey, sortDir]);
 
+  const postTotals = useMemo(() => {
+    return (campaign?.posts ?? []).reduce(
+      (acc, p) => {
+        acc.likes += p.likes ?? 0;
+        acc.comments += p.comments ?? 0;
+        acc.views += p.views ?? 0;
+        return acc;
+      },
+      { likes: 0, comments: 0, views: 0 }
+    );
+  }, [campaign?.posts]);
+
   const SortHeader = ({ label, sortKey: key, align }: { label: string; sortKey: SortKey; align?: 'left' | 'right' }) => {
     const active = sortKey === key;
     return (
@@ -235,17 +247,63 @@ export default function CampaignDetail() {
     enabled: tab === 'ai' && !!id,
   });
 
-  // Fetch campaign metrics for charts
-  const { data: metricsTimeline } = useQuery<
-    { date: string; value: number }[]
-  >({
-    queryKey: ['metrics', 'timeline', id],
+  // Per-post per-date snapshots — sliced client-side to drive scope dropdown.
+  type SnapshotRow = {
+    post_id: string;
+    post_title: string | null;
+    platform: string;
+    date: string;
+    views: number;
+    likes: number;
+    comments: number;
+    shares: number;
+    engagement: number;
+  };
+  const { data: snapshots } = useQuery<SnapshotRow[]>({
+    queryKey: ['metrics', 'snapshots', id],
     queryFn: () =>
-      apiFetch<{ date: string; value: number }[]>(
-        `/campaigns/${id}/metrics/timeline`
-      ),
+      apiFetch<SnapshotRow[]>(`/campaigns/${id}/metrics/snapshots`),
     enabled: tab === 'metrics' && !!id,
   });
+
+  // Scope: 'campaign' | 'platform:<name>' | 'post:<id>'
+  const [metricScope, setMetricScope] = useState<string>('campaign');
+  const [metricKind, setMetricKind] = useState<
+    'engagement' | 'likes' | 'views' | 'comments'
+  >('engagement');
+
+  const scopePlatforms = useMemo(() => {
+    const set = new Set<string>();
+    (campaign?.posts ?? []).forEach((p) => set.add(p.platform));
+    return Array.from(set);
+  }, [campaign?.posts]);
+
+  const chartSeries = useMemo(() => {
+    const rows = snapshots ?? [];
+    let filtered: SnapshotRow[] = rows;
+    if (metricScope.startsWith('platform:')) {
+      const plat = metricScope.slice('platform:'.length);
+      filtered = rows.filter((r) => r.platform === plat);
+    } else if (metricScope.startsWith('post:')) {
+      const pid = metricScope.slice('post:'.length);
+      filtered = rows.filter((r) => r.post_id === pid);
+    }
+    // Sum metric per date (for campaign + platform scopes; post scope already has 1/day)
+    const byDate = new Map<string, number>();
+    for (const r of filtered) {
+      byDate.set(r.date, (byDate.get(r.date) ?? 0) + r[metricKind]);
+    }
+    return Array.from(byDate.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, value]) => ({ date, value }));
+  }, [snapshots, metricScope, metricKind]);
+
+  const METRIC_LABELS: Record<typeof metricKind, string> = {
+    engagement: 'Engagement',
+    likes: 'Likes',
+    views: 'Views',
+    comments: 'Comments',
+  };
 
   const { data: platformBreakdown } = useQuery<
     { platform: string; engagement: number }[]
@@ -532,10 +590,32 @@ export default function CampaignDetail() {
       {tab === 'posts' && (
         <div>
           <div className="flex-between mb-16">
-            <span className="text-muted">
-              {campaign.posts?.length ?? 0} post
-              {(campaign.posts?.length ?? 0) !== 1 ? 's' : ''}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+              <span className="text-muted">
+                {campaign.posts?.length ?? 0} post
+                {(campaign.posts?.length ?? 0) !== 1 ? 's' : ''}
+              </span>
+              {(campaign.posts?.length ?? 0) > 0 && (
+                <div style={{ display: 'flex', gap: 16 }}>
+                  {([
+                    ['Likes', postTotals.likes],
+                    ['Comments', postTotals.comments],
+                    ['Views', postTotals.views],
+                  ] as const).map(([label, value]) => (
+                    <span
+                      key={label}
+                      title={`${value.toLocaleString()} total ${label.toLowerCase()} across all posts`}
+                      style={{ display: 'inline-flex', alignItems: 'baseline', gap: 5, fontSize: '0.85rem' }}
+                    >
+                      <span style={{ fontWeight: 700 }}>{formatCount(value)}</span>
+                      <span className="text-muted" style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+                        {label}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn btn-secondary btn-sm"
@@ -851,22 +931,80 @@ export default function CampaignDetail() {
       {/* Metrics Tab */}
       {tab === 'metrics' && (
         <div>
-          {metricsTimeline && metricsTimeline.length > 0 ? (
-            <EngagementChart
-              data={metricsTimeline}
-              title="Engagement Over Time"
-            />
-          ) : (
-            <div className="card mb-24">
+          <div className="card mb-24">
+            <div
+              className="flex-between"
+              style={{ marginBottom: 16, gap: 12, flexWrap: 'wrap' }}
+            >
+              <select
+                className="form-select"
+                style={{ maxWidth: 320 }}
+                value={metricScope}
+                onChange={(e) => setMetricScope(e.target.value)}
+              >
+                <option value="campaign">Campaign (all posts)</option>
+                {scopePlatforms.length > 0 && (
+                  <optgroup label="By Platform">
+                    {scopePlatforms.map((p) => (
+                      <option key={p} value={`platform:${p}`}>
+                        {PLATFORM_NAMES[p] ?? p}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {(campaign.posts ?? []).length > 0 && (
+                  <optgroup label="By Post">
+                    {(campaign.posts ?? []).map((p) => {
+                      const label = p.title ?? p.platform_post_id ?? p.id.slice(0, 8);
+                      const truncated =
+                        label.length > 60 ? label.slice(0, 60) + '…' : label;
+                      return (
+                        <option key={p.id} value={`post:${p.id}`}>
+                          {(PLATFORM_NAMES[p.platform] ?? p.platform) + ' · ' + truncated}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                )}
+              </select>
+              <select
+                className="form-select"
+                style={{ maxWidth: 180 }}
+                value={metricKind}
+                onChange={(e) =>
+                  setMetricKind(
+                    e.target.value as 'engagement' | 'likes' | 'views' | 'comments'
+                  )
+                }
+              >
+                <option value="engagement">Engagement</option>
+                <option value="likes">Likes</option>
+                <option value="views">Views</option>
+                <option value="comments">Comments</option>
+              </select>
+            </div>
+            {chartSeries.length > 0 ? (
+              <EngagementChart
+                bare
+                data={chartSeries}
+                dataKeys={[
+                  {
+                    key: 'value',
+                    color: 'var(--chart-1)',
+                    name: METRIC_LABELS[metricKind],
+                  },
+                ]}
+              />
+            ) : (
               <div className="empty-state">
                 <TrendingUp />
                 <p>
-                  No timeline data yet. Fetch metrics to see engagement
-                  trends.
+                  No snapshots for this selection yet. Fetch metrics or pick a
+                  different scope.
                 </p>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <div
             style={{

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import {
@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getVersion } from '@tauri-apps/api/app';
 import { onOpenUrl, getCurrent as getCurrentDeepLinks } from '@tauri-apps/plugin-deep-link';
 import { ThemeProvider } from './theme/ThemeProvider';
 import { ActiveProfileProvider } from './hooks/useActiveProfile';
@@ -164,6 +165,10 @@ function useOAuthDeepLinks() {
 function AppLayout() {
   useStartupMetricFetch();
   useOAuthDeepLinks();
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => { /* not in Tauri context */ });
+  }, []);
   return (
     <div className="app-layout">
       <TitleBar />
@@ -192,7 +197,7 @@ function AppLayout() {
             <Settings /> Settings
           </NavLink>
         </nav>
-        <div className="sidebar-footer">MEEM v0.1.0</div>
+        <div className="sidebar-footer">MEEM{appVersion ? ` v${appVersion}` : ''}</div>
       </aside>
       <main className="main-content">
         <Routes>
